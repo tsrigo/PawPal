@@ -66,6 +66,12 @@ export function createEmptyStats(date = todayKey()): TodayStats {
     breaksTaken: 0,
     watersLogged: 0,
     focusMinutes: 0,
-    focusWarnings: 0
+    focusMs: 0,
+    distractionMs: 0,
+    focusWarnings: 0,
+    focusByHour: {},
+    distractionByHour: {},
+    focusByWindow: {},
+    distractionByWindow: {}
   };
 }

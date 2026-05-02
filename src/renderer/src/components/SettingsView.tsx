@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { JSX, ReactNode } from "react";
 import { i18n, LANGUAGE_OPTIONS, resolveLanguage } from "../../../shared/i18n";
 import { petAppearanceOptions, resolvePetAppearanceId } from "../../../shared/petAppearances";
-import type { DemoTrigger, PetAppearanceId, Settings } from "../../../shared/types";
+import type { DemoTrigger, PetAppearanceId, Settings, TodayStats } from "../../../shared/types";
 import { getPetAsset } from "../assets";
 import { distractionHelp, formatDistractionState, formatTimer, formatTimestamp, localeFor } from "../format";
 import { useNow, useSnapshot } from "../hooks";
@@ -202,6 +202,113 @@ function StatCard({
   );
 }
 
+function formatStatsDuration(ms: number, labels: SettingsCopy): string {
+  const minutes = ms > 0 ? Math.max(1, Math.round(ms / 60_000)) : 0;
+  return `${minutes}${labels.minuteUnit}`;
+}
+
+function topEntries(source: Record<string, number>, limit = 3): Array<[string, number]> {
+  return Object.entries(source)
+    .filter(([, duration]) => duration > 0)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit);
+}
+
+function formatHourLabel(hour: string): string {
+  return `${hour}:00`;
+}
+
+function StatsList({
+  title,
+  entries,
+  labels
+}: {
+  title: string;
+  entries: Array<[string, number]>;
+  labels: SettingsCopy;
+}): JSX.Element {
+  return (
+    <div className="stats-panel">
+      <h3 className="stats-panel__title">{title}</h3>
+      {entries.length ? (
+        <ol className="stats-list">
+          {entries.map(([name, duration]) => (
+            <li key={name}>
+              <span title={name}>{name}</span>
+              <strong>{formatStatsDuration(duration, labels)}</strong>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="stats-empty">{labels.noStatsYet}</p>
+      )}
+    </div>
+  );
+}
+
+function StatsOverview({ stats, labels }: { stats: TodayStats; labels: SettingsCopy }): JSX.Element {
+  const hours = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
+  const maxHourDuration = Math.max(
+    1,
+    ...hours.map((hour) => (stats.focusByHour[hour] ?? 0) + (stats.distractionByHour[hour] ?? 0))
+  );
+  const topHours = topEntries(
+    Object.fromEntries(
+      hours.map((hour) => [formatHourLabel(hour), (stats.focusByHour[hour] ?? 0) + (stats.distractionByHour[hour] ?? 0)])
+    )
+  );
+
+  return (
+    <section className="prefs__analytics" aria-label={labels.focusDistribution}>
+      <div className="analytics-summary">
+        <div>
+          <span>{labels.focusTime}</span>
+          <strong>{formatStatsDuration(stats.focusMs, labels)}</strong>
+        </div>
+        <div>
+          <span>{labels.distractionTime}</span>
+          <strong>{formatStatsDuration(stats.distractionMs, labels)}</strong>
+        </div>
+      </div>
+
+      <div className="stats-panel stats-panel--wide">
+        <div className="stats-panel__head">
+          <h3 className="stats-panel__title">{labels.focusDistribution}</h3>
+          <span>{labels.distractionDistribution}</span>
+        </div>
+        <div className="hour-bars">
+          {hours.map((hour) => {
+            const focus = stats.focusByHour[hour] ?? 0;
+            const distraction = stats.distractionByHour[hour] ?? 0;
+            const total = focus + distraction;
+            return (
+              <div className="hour-bar" key={hour} title={`${formatHourLabel(hour)} ${formatStatsDuration(total, labels)}`}>
+                <span>{formatHourLabel(hour)}</span>
+                <div className="hour-bar__track">
+                  <i
+                    className="hour-bar__focus"
+                    style={{ width: `${(focus / maxHourDuration) * 100}%` }}
+                  />
+                  <i
+                    className="hour-bar__distraction"
+                    style={{ width: `${(distraction / maxHourDuration) * 100}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="analytics-grid">
+        <StatsList title={labels.topFocusWindows} entries={topEntries(stats.focusByWindow)} labels={labels} />
+        <StatsList title={labels.topDistractionWindows} entries={topEntries(stats.distractionByWindow)} labels={labels} />
+        <StatsList title={labels.topHours} entries={topHours} labels={labels} />
+      </div>
+    </section>
+  );
+}
+
 export function SettingsView(): JSX.Element {
   const snapshot = useSnapshot();
   const { settings, stats } = snapshot;
@@ -258,6 +365,8 @@ export function SettingsView(): JSX.Element {
         <StatCard label={labels.focusMin} value={stats.focusMinutes} unit={labels.minuteUnit} />
         <StatCard label={labels.warnings} value={stats.focusWarnings} unit={labels.countUnit} />
       </section>
+
+      <StatsOverview stats={stats} labels={labels} />
 
       {!draft.onboardingDismissed ? (
         <aside className="prefs__welcome">

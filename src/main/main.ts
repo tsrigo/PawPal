@@ -36,6 +36,7 @@ import {
   STORE_NAME
 } from "./config";
 import { classifyDistraction, isPermissionError, readActiveWindow, supportsActiveWindowDetection } from "./distraction";
+import type { ActiveWindowInfo } from "./distraction";
 import { createTrayImage } from "./trayIcon";
 
 type PetPosition = {
@@ -82,6 +83,11 @@ let distractionStartupTimer: NodeJS.Timeout | null = null;
 let breakDueAt: number | null = null;
 let hydrationDueAt: number | null = null;
 let focusEndsAt: number | null = null;
+let focusRemainingMs: number | null = null;
+let focusSegmentStartedAt: number | null = null;
+let distractionStartedAt: number | null = null;
+let distractionWindow: ActiveWindowInfo | null = null;
+let lastFocusWindow: ActiveWindowInfo | null = null;
 let bubbleTimer: NodeJS.Timeout | null = null;
 let dragTimer: NodeJS.Timeout | null = null;
 let breakRunVelocity: PetPosition = { x: 0, y: 0 };
@@ -144,43 +150,72 @@ function getStatsHistory(): StatsHistory {
   return store.get("statsHistory", {});
 }
 
-function isSameStats(left: TodayStats | undefined, right: TodayStats): boolean {
-  return Boolean(
-    left &&
-      left.date === right.date &&
-      left.breaksTaken === right.breaksTaken &&
-      left.watersLogged === right.watersLogged &&
-      left.focusMinutes === right.focusMinutes &&
-      left.focusWarnings === right.focusWarnings
+function normalizeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function normalizeDurationMap(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, duration]) => [key, normalizeNumber(duration)] as const)
+      .filter(([, duration]) => duration > 0)
   );
+}
+
+function normalizeStats(stats: Partial<TodayStats> | undefined, date = todayKey()): TodayStats {
+  const base = createEmptyStats(typeof stats?.date === "string" ? stats.date : date);
+  const focusMs = normalizeNumber(stats?.focusMs) || normalizeNumber(stats?.focusMinutes) * 60_000;
+  const distractionMs = normalizeNumber(stats?.distractionMs);
+  return {
+    ...base,
+    ...stats,
+    date: base.date,
+    breaksTaken: normalizeNumber(stats?.breaksTaken),
+    watersLogged: normalizeNumber(stats?.watersLogged),
+    focusMs,
+    distractionMs,
+    focusMinutes: Math.round(focusMs / 60_000),
+    focusWarnings: normalizeNumber(stats?.focusWarnings),
+    focusByHour: normalizeDurationMap(stats?.focusByHour),
+    distractionByHour: normalizeDurationMap(stats?.distractionByHour),
+    focusByWindow: normalizeDurationMap(stats?.focusByWindow),
+    distractionByWindow: normalizeDurationMap(stats?.distractionByWindow)
+  };
+}
+
+function isSameStats(left: TodayStats | undefined, right: TodayStats): boolean {
+  return Boolean(left && JSON.stringify(normalizeStats(left)) === JSON.stringify(normalizeStats(right)));
 }
 
 function saveStatsToHistory(stats: TodayStats): void {
   if (!stats.date) return;
   const history = getStatsHistory();
-  if (isSameStats(history[stats.date], stats)) return;
+  const normalized = normalizeStats(stats);
+  if (isSameStats(history[normalized.date], normalized)) return;
   store.set("statsHistory", {
     ...history,
-    [stats.date]: stats
+    [normalized.date]: normalized
   });
 }
 
 function getStats(): TodayStats {
   const today = todayKey();
-  const stats = store.get("stats", createEmptyStats());
+  const stats = normalizeStats(store.get("stats", createEmptyStats()));
   if (stats.date !== today) {
     saveStatsToHistory(stats);
-    const current = getStatsHistory()[today] ?? createEmptyStats(today);
+    const current = normalizeStats(getStatsHistory()[today] ?? createEmptyStats(today), today);
     store.set("stats", current);
     saveStatsToHistory(current);
     return current;
   }
+  store.set("stats", stats);
   saveStatsToHistory(stats);
   return stats;
 }
 
 function updateStats(mutator: (stats: TodayStats) => TodayStats): void {
-  const next = mutator(getStats());
+  const next = normalizeStats(mutator(getStats()));
   store.set("stats", next);
   saveStatsToHistory(next);
   sendToAll("stats:updated", next);
@@ -194,6 +229,75 @@ function resetTodayStats(): void {
   sendToAll("stats:updated", reset);
 }
 
+function windowStatsKey(active: ActiveWindowInfo | null): string {
+  const appName = active?.appName.trim();
+  const title = active?.windowTitle.trim();
+  if (!appName && !title) return "Unknown";
+  if (!title) return appName || "Unknown";
+  if (!appName) return title;
+  return `${appName} - ${title}`;
+}
+
+function addDuration(target: Record<string, number>, key: string, durationMs: number): Record<string, number> {
+  if (durationMs <= 0) return target;
+  return {
+    ...target,
+    [key]: (target[key] ?? 0) + durationMs
+  };
+}
+
+function nextHourBoundary(timestamp: number): number {
+  const date = new Date(timestamp);
+  date.setMinutes(0, 0, 0);
+  date.setHours(date.getHours() + 1);
+  return date.getTime();
+}
+
+function addHourlyDuration(
+  target: Record<string, number>,
+  startedAt: number,
+  endedAt: number
+): Record<string, number> {
+  let next = { ...target };
+  let cursor = startedAt;
+  while (cursor < endedAt) {
+    const segmentEnd = Math.min(endedAt, nextHourBoundary(cursor));
+    const hour = String(new Date(cursor).getHours()).padStart(2, "0");
+    next = addDuration(next, hour, segmentEnd - cursor);
+    cursor = segmentEnd;
+  }
+  return next;
+}
+
+function recordStatsSpan(
+  kind: "focus" | "distraction",
+  startedAt: number | null,
+  endedAt: number,
+  active: ActiveWindowInfo | null
+): void {
+  if (!startedAt || endedAt <= startedAt) return;
+  const durationMs = endedAt - startedAt;
+  const windowKey = windowStatsKey(active);
+  updateStats((stats) => {
+    if (kind === "focus") {
+      const focusMs = stats.focusMs + durationMs;
+      return {
+        ...stats,
+        focusMs,
+        focusMinutes: Math.round(focusMs / 60_000),
+        focusByHour: addHourlyDuration(stats.focusByHour, startedAt, endedAt),
+        focusByWindow: addDuration(stats.focusByWindow, windowKey, durationMs)
+      };
+    }
+    return {
+      ...stats,
+      distractionMs: stats.distractionMs + durationMs,
+      distractionByHour: addHourlyDuration(stats.distractionByHour, startedAt, endedAt),
+      distractionByWindow: addDuration(stats.distractionByWindow, windowKey, durationMs)
+    };
+  });
+}
+
 function snapshot(): AppSnapshot {
   return {
     settings: getSettings(),
@@ -202,7 +306,9 @@ function snapshot(): AppSnapshot {
     timers: {
       breakDueAt,
       hydrationDueAt,
-      focusEndsAt
+      focusEndsAt,
+      focusRemainingMs,
+      distractionStartedAt
     },
     distraction: distractionStatus,
     petState,
@@ -732,7 +838,10 @@ async function checkDistractionNow(): Promise<void> {
     });
 
     if (!focusActive || focusPhase !== "focus" || blockingMode === "focusWarning") return;
-    if (!matchedRule) return;
+    if (!matchedRule) {
+      lastFocusWindow = active;
+      return;
+    }
     if (
       distractionStatus.lastWarningAt &&
       now - distractionStatus.lastWarningAt < DISTRACTION_WARNING_COOLDOWN_MS
@@ -740,8 +849,7 @@ async function checkDistractionNow(): Promise<void> {
       return;
     }
 
-    setDistractionStatus({ lastWarningAt: now });
-    triggerFocusWarning(matchedRule.replace(/^(app|keyword):/, ""));
+    pauseFocusForDistraction(active, matchedRule.replace(/^(app|keyword):/, ""));
   } catch (error) {
     setDistractionStatus({
       state: isPermissionError(error) ? "permission-needed" : "error",
@@ -857,8 +965,59 @@ function triggerHydrationReminder(fromDemo: boolean): void {
   });
 }
 
+function pauseFocusForDistraction(active: ActiveWindowInfo, rule?: string): void {
+  if (!focusActive || focusPhase !== "focus" || blockingMode === "focusWarning") return;
+  const now = Date.now();
+  focusRemainingMs = Math.max(0, (focusEndsAt ?? now) - now);
+  recordStatsSpan("focus", focusSegmentStartedAt, now, lastFocusWindow);
+  focusSegmentStartedAt = null;
+  clearFocusTimer();
+  focusEndsAt = null;
+  distractionStartedAt = now;
+  distractionWindow = active;
+  blockingMode = "focusWarning";
+  setDistractionStatus({ lastWarningAt: now });
+  updateStats((stats) => ({ ...stats, focusWarnings: stats.focusWarnings + 1 }));
+  setPetState("focusAlert");
+  sendToAll("app:snapshot", snapshot());
+  const labels = text();
+  showBubble({
+    id: "focus-warning",
+    message: pick(labels.bubble.focusWarning)(rule ?? "?"),
+    actions: [
+      { id: "focus:back", label: labels.actions.focusBack, kind: "primary" },
+      { id: "focus:end", label: labels.actions.focusEnd }
+    ]
+  });
+}
+
+function resumeFocusFromDistraction(): void {
+  if (!focusActive || focusPhase !== "focus") return;
+  const now = Date.now();
+  recordStatsSpan("distraction", distractionStartedAt, now, distractionWindow);
+  distractionStartedAt = null;
+  distractionWindow = null;
+  blockingMode = null;
+  setDistractionStatus({ lastWarningAt: null });
+  focusSegmentStartedAt = now;
+  focusEndsAt = now + Math.max(0, focusRemainingMs ?? getSettings().focusDurationMinutes * 60_000);
+  focusRemainingMs = null;
+  clearFocusTimer();
+  focusTimer = setTimeout(() => completeFocusInterval(), Math.max(0, focusEndsAt - now));
+  sendToAll("app:snapshot", snapshot());
+  setPetState("focusGuard");
+  showBubble({ id: "focus-back", message: pick(text().bubble.focusBack), autoDismissMs: 1800 });
+  setTimeout(() => {
+    if (focusActive && !blockingMode) hideBubble();
+  }, 1900);
+}
+
 function triggerFocusWarning(rule?: string): void {
   if (blockingMode === "breakRun") return;
+  if (focusActive && focusPhase === "focus" && blockingMode !== "focusWarning") {
+    pauseFocusForDistraction(distractionWindow ?? lastFocusWindow ?? { appName: "", windowTitle: "" }, rule);
+    return;
+  }
   ensurePetWindowVisible();
   if (!focusActive) startFocusMode();
   blockingMode = "focusWarning";
@@ -886,7 +1045,12 @@ function clearFocusTimer(): void {
 function beginFocusInterval(settings = getSettings()): void {
   focusPhase = "focus";
   focusStartedAt = Date.now();
-  focusEndsAt = Date.now() + settings.focusDurationMinutes * 60 * 1000;
+  focusSegmentStartedAt = focusStartedAt;
+  focusRemainingMs = null;
+  distractionStartedAt = null;
+  distractionWindow = null;
+  lastFocusWindow = null;
+  focusEndsAt = focusStartedAt + settings.focusDurationMinutes * 60 * 1000;
   setPetState("focusGuard");
   showBubble({
     id: "focus-start",
@@ -902,6 +1066,11 @@ function beginFocusInterval(settings = getSettings()): void {
 function beginPomodoroBreak(settings = getSettings()): void {
   focusPhase = "break";
   focusStartedAt = null;
+  focusSegmentStartedAt = null;
+  focusRemainingMs = null;
+  distractionStartedAt = null;
+  distractionWindow = null;
+  lastFocusWindow = null;
   focusEndsAt = Date.now() + settings.focusBreakMinutes * 60 * 1000;
   blockingMode = null;
   scheduleDistractionDetection();
@@ -922,10 +1091,8 @@ function beginPomodoroBreak(settings = getSettings()): void {
 function completeFocusInterval(): void {
   if (!focusActive || focusPhase !== "focus") return;
   const settings = getSettings();
-  updateStats((stats) => ({
-    ...stats,
-    focusMinutes: stats.focusMinutes + settings.focusDurationMinutes
-  }));
+  recordStatsSpan("focus", focusSegmentStartedAt, Date.now(), lastFocusWindow);
+  focusSegmentStartedAt = null;
   if (focusCycleCurrent >= settings.focusPomodoroCount) {
     stopFocusMode(true);
     return;
@@ -948,23 +1115,26 @@ function startFocusMode(): void {
 
 function stopFocusMode(completed: boolean): void {
   if (!focusActive) return;
-  const startedAt = focusStartedAt ?? Date.now();
+  const now = Date.now();
   const shouldCountPartialFocus = !completed && focusPhase === "focus";
-  const elapsedMinutes = Math.max(1, Math.round((Date.now() - startedAt) / 60000));
+  if (blockingMode === "focusWarning") {
+    recordStatsSpan("distraction", distractionStartedAt, now, distractionWindow);
+  } else if (shouldCountPartialFocus) {
+    recordStatsSpan("focus", focusSegmentStartedAt, now, lastFocusWindow);
+  }
   focusActive = false;
   focusPhase = null;
   focusCycleCurrent = 0;
   focusStartedAt = null;
+  focusSegmentStartedAt = null;
+  focusRemainingMs = null;
+  distractionStartedAt = null;
+  distractionWindow = null;
+  lastFocusWindow = null;
   blockingMode = null;
   clearFocusTimer();
   focusEndsAt = null;
   scheduleDistractionDetection();
-  if (shouldCountPartialFocus) {
-    updateStats((stats) => ({
-      ...stats,
-      focusMinutes: stats.focusMinutes + elapsedMinutes
-    }));
-  }
   sendToAll("app:snapshot", snapshot());
   setPetState("focusDone");
   showBubble({
@@ -1044,13 +1214,7 @@ function handleBubbleAction(actionId: string): void {
     return;
   }
   if (actionId === "focus:back") {
-    blockingMode = null;
-    sendToAll("app:snapshot", snapshot());
-    setPetState("focusGuard");
-    showBubble({ id: "focus-back", message: pick(text().bubble.focusBack), autoDismissMs: 1800 });
-    setTimeout(() => {
-      if (focusActive && !blockingMode) hideBubble();
-    }, 1900);
+    resumeFocusFromDistraction();
     return;
   }
   if (actionId === "focus:end") {

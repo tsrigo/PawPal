@@ -339,6 +339,148 @@ textarea {
   font-weight: 600;
 }
 
+.prefs__analytics {
+  display: grid;
+  gap: 12px;
+  margin: -10px 0 24px;
+}
+
+.analytics-summary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.analytics-summary > div,
+.stats-panel {
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.analytics-summary span,
+.stats-panel__head span {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.analytics-summary strong {
+  color: var(--ink);
+  display: block;
+  font-size: 20px;
+  line-height: 1.1;
+  margin-top: 6px;
+}
+
+.stats-panel--wide {
+  min-width: 0;
+}
+
+.stats-panel__head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.stats-panel__title {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.hour-bars {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hour-bar {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.hour-bar span {
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hour-bar__track {
+  background: rgba(60, 47, 28, 0.08);
+  border-radius: 999px;
+  display: flex;
+  height: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.hour-bar__track i {
+  display: block;
+  height: 100%;
+  min-width: 0;
+}
+
+.hour-bar__focus {
+  background: #4f9d83;
+}
+
+.hour-bar__distraction {
+  background: #c65f46;
+}
+
+.analytics-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.stats-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.stats-list li {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.stats-list span {
+  color: var(--ink-soft);
+  flex: 1;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-list strong {
+  color: var(--ink);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-empty {
+  color: var(--ink-faint);
+  font-size: 12.5px;
+  margin: 10px 0 0;
+}
+
 .text-link {
   background: transparent;
   border: 0;
@@ -900,6 +1042,12 @@ textarea {
 
   .prefs__stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-grid,
+  .analytics-summary,
+  .hour-bars {
+    grid-template-columns: 1fr;
   }
 
   .prefs__diag {

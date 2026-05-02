@@ -59,7 +59,13 @@ export type TodayStats = {
   breaksTaken: number;
   watersLogged: number;
   focusMinutes: number;
+  focusMs: number;
+  distractionMs: number;
   focusWarnings: number;
+  focusByHour: Record<string, number>;
+  distractionByHour: Record<string, number>;
+  focusByWindow: Record<string, number>;
+  distractionByWindow: Record<string, number>;
 };
 
 export type StatsHistory = Record<string, TodayStats>;
@@ -68,6 +74,8 @@ export type TimerStatus = {
   breakDueAt: number | null;
   hydrationDueAt: number | null;
   focusEndsAt: number | null;
+  focusRemainingMs: number | null;
+  distractionStartedAt: number | null;
 };
 
 export type DistractionStatus = {

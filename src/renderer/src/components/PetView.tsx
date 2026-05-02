@@ -26,10 +26,20 @@ function randomVariant(count: number, previous?: number): number {
 
 function formatFocusCountdown(endsAt: number | null, now: number): string {
   const remainingSeconds = Math.max(0, Math.ceil(((endsAt ?? now) - now) / 1000));
+  return formatDurationSeconds(remainingSeconds);
+}
+
+function formatDurationSeconds(totalSeconds: number): string {
+  const remainingSeconds = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(remainingSeconds / 3600);
   const minutes = Math.floor((remainingSeconds % 3600) / 60);
   const seconds = remainingSeconds % 60;
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function formatDistractionElapsed(startedAt: number | null, now: number): string {
+  if (!startedAt) return "00:00:00";
+  return formatDurationSeconds((now - startedAt) / 1000);
 }
 
 export function PetView(): JSX.Element {
@@ -151,8 +161,18 @@ export function PetView(): JSX.Element {
 
       {snapshot.focusActive ? (
         <div className="focus-badge">
-          <span>{snapshot.focusPhase === "break" ? labels.break : labels.focus}</span>
-          <strong>{formatFocusCountdown(snapshot.timers.focusEndsAt, now)}</strong>
+          <span>
+            {snapshot.blockingMode === "focusWarning"
+              ? labels.distraction
+              : snapshot.focusPhase === "break"
+                ? labels.break
+                : labels.focus}
+          </span>
+          <strong>
+            {snapshot.blockingMode === "focusWarning"
+              ? formatDistractionElapsed(snapshot.timers.distractionStartedAt, now)
+              : formatFocusCountdown(snapshot.timers.focusEndsAt, now)}
+          </strong>
           {snapshot.settings.focusPomodoroCount > 1 ? (
             <em>
               {snapshot.focusCycleCurrent}/{snapshot.settings.focusPomodoroCount}
