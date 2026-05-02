@@ -30,7 +30,7 @@ textarea {
   background: transparent;
   display: flex;
   flex-direction: column;
-  height: 290px;
+  height: 100vh;
   justify-content: flex-end;
   padding: 0 4px;
   pointer-events: none;
@@ -190,6 +190,12 @@ textarea {
   color: #2d261f;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+.focus-badge em {
+  color: rgba(45, 38, 31, 0.62);
+  font-size: 10px;
+  font-style: normal;
 }
 
 .prefs {
@@ -709,6 +715,16 @@ textarea {
   border-color: var(--accent);
 }
 
+.pref-button:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+  opacity: 0.58;
+}
+
+.pref-button:disabled:hover {
+  border-color: var(--rule-strong);
+}
+
 .pref-button.is-primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -769,6 +785,11 @@ textarea {
   display: grid;
   gap: 14px;
   margin-top: 12px;
+}
+
+.prefs__diag-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .diag-group__title {

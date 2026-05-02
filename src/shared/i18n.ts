@@ -67,6 +67,10 @@ export const I18N = {
         "专心时间到！",
         "专心结束！摇尾巴~",
       ],
+      focusBreakStart: [
+        (minutes: number) => `休息 ${minutes} 分钟，我陪你放松一下`,
+        (minutes: number) => `番茄完成！休息 ${minutes} 分钟吧`
+      ],
       focusCancelled: [
         "好，我陪你歇会儿",
         "收工！我趴下啦"
@@ -118,6 +122,8 @@ export const I18N = {
       hydrationInterval: "喝水间隔",
       focus: "专注",
       focusDuration: "专注时长",
+      focusBreakDuration: "休息时长",
+      pomodoroCount: "番茄钟个数",
       enableDistractionDetection: "开启分心检测",
       detectionGrace: "检测宽限时间",
       blockedApps: "屏蔽应用",
@@ -160,6 +166,7 @@ export const I18N = {
       resetToday: "重置今日",
       startFocus: "开始专注",
       stopFocus: "停止专注",
+      addCurrentApp: "添加当前应用",
       diagnostics: "诊断信息",
       preloadUnavailable: "Preload 不可用",
       preloadCopy:
@@ -238,6 +245,10 @@ export const I18N = {
         "Focus time's up!",
         "Focus done! *tail wag*"
       ],
+      focusBreakStart: [
+        (minutes: number) => `Pomodoro done. Rest for ${minutes} minutes.`,
+        (minutes: number) => `Break time: ${minutes} minutes.`
+      ],
       focusCancelled: [
         "Okay, I'll keep you company for a bit",
         "All done! I'm lying down~"
@@ -289,6 +300,8 @@ export const I18N = {
       hydrationInterval: "Hydration Interval",
       focus: "Focus",
       focusDuration: "Focus Duration",
+      focusBreakDuration: "Break Duration",
+      pomodoroCount: "Pomodoros",
       enableDistractionDetection: "Enable Distraction Detection",
       detectionGrace: "Detection Grace",
       blockedApps: "Blocked Apps",
@@ -331,6 +344,7 @@ export const I18N = {
       resetToday: "Reset Today",
       startFocus: "Start Focus",
       stopFocus: "Stop Focus",
+      addCurrentApp: "Add Current App",
       diagnostics: "Diagnostics",
       preloadUnavailable: "Preload unavailable",
       preloadCopy:

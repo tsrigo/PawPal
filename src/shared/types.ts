@@ -35,6 +35,8 @@ export type SpeechBubble = {
 
 export type BlockingMode = "break" | "breakRun" | "hydration" | "focusWarning" | null;
 
+export type FocusPhase = "focus" | "break" | null;
+
 export type Settings = {
   language: Language;
   petAppearanceId: PetAppearanceId;
@@ -44,6 +46,8 @@ export type Settings = {
   hydrationReminderEnabled: boolean;
   hydrationIntervalMinutes: number;
   focusDurationMinutes: number;
+  focusBreakMinutes: number;
+  focusPomodoroCount: number;
   distractionDetectionEnabled: boolean;
   distractionGraceSeconds: number;
   distractionBlockedApps: string[];
@@ -86,6 +90,8 @@ export type AppSnapshot = {
   petFacing: PetFacing;
   blockingMode: BlockingMode;
   focusActive: boolean;
+  focusPhase: FocusPhase;
+  focusCycleCurrent: number;
   dogVisible: boolean;
 };
 

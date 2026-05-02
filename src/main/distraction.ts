@@ -7,6 +7,9 @@ export type ActiveWindowInfo = {
 };
 
 const IGNORED_DISTRACTION_APPS = ["PawPal", "Electron"];
+const DISTRACTION_APP_ALIASES: Record<string, string[]> = {
+  wechat: ["weixin", "wechatappex"]
+};
 
 function normalizeRule(value: string): string {
   return value.trim().toLowerCase();
@@ -123,6 +126,12 @@ export function classifyDistraction(active: ActiveWindowInfo, settings: Settings
   const title = active.windowTitle.trim();
   const appNameLower = appName.toLowerCase();
   const titleLower = title.toLowerCase();
+  const appNameCandidates = [
+    appNameLower,
+    ...Object.entries(DISTRACTION_APP_ALIASES)
+      .filter(([, aliases]) => aliases.some((alias) => appNameLower.includes(alias)))
+      .map(([canonical]) => canonical)
+  ];
 
   if (IGNORED_DISTRACTION_APPS.some((ignored) => ignored.toLowerCase() === appNameLower)) {
     return null;
@@ -131,7 +140,7 @@ export function classifyDistraction(active: ActiveWindowInfo, settings: Settings
   const blockedApp = settings.distractionBlockedApps
     .map(normalizeRule)
     .filter(Boolean)
-    .find((rule) => appNameLower.includes(rule));
+    .find((rule) => appNameCandidates.some((candidate) => candidate.includes(rule) || rule.includes(candidate)));
   if (blockedApp) return `app:${blockedApp}`;
 
   const blockedKeyword = settings.distractionBlockedKeywords

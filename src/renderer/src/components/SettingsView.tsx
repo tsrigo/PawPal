@@ -237,6 +237,11 @@ export function SettingsView(): JSX.Element {
     setSettingsDirty(true);
   }
 
+  const currentApp = snapshot.distraction.activeApp.trim();
+  const canAddCurrentApp =
+    Boolean(currentApp) &&
+    !draft.distractionBlockedApps.some((entry) => entry.toLowerCase() === currentApp.toLowerCase());
+
   return (
     <main className="prefs">
       <header className="prefs__head">
@@ -358,6 +363,30 @@ export function SettingsView(): JSX.Element {
               max={120}
               unit={labels.minuteUnit}
               onChange={(focusDurationMinutes) => updateDraft({ focusDurationMinutes })}
+            />
+          }
+        />
+        <Row
+          label={labels.focusBreakDuration}
+          control={
+            <NumberControl
+              value={draft.focusBreakMinutes}
+              min={1}
+              max={60}
+              unit={labels.minuteUnit}
+              onChange={(focusBreakMinutes) => updateDraft({ focusBreakMinutes })}
+            />
+          }
+        />
+        <Row
+          label={labels.pomodoroCount}
+          control={
+            <NumberControl
+              value={draft.focusPomodoroCount}
+              min={1}
+              max={12}
+              unit={labels.countUnit}
+              onChange={(focusPomodoroCount) => updateDraft({ focusPomodoroCount })}
             />
           }
         />
@@ -487,6 +516,16 @@ export function SettingsView(): JSX.Element {
                 value={formatTimestamp(snapshot.distraction.lastCheckedAt, language, labels)}
               />
             </DiagGroup>
+            <div className="prefs__diag-actions">
+              <button
+                type="button"
+                className="pref-button"
+                disabled={!canAddCurrentApp}
+                onClick={() => window.pawpal.blockCurrentApp()}
+              >
+                {labels.addCurrentApp}
+              </button>
+            </div>
 
             {snapshot.distraction.activeWindowTitle ? (
               <p className="prefs__diag-note">{snapshot.distraction.activeWindowTitle}</p>

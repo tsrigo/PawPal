@@ -14,6 +14,7 @@ import type {
   BlockingMode,
   DistractionStatus,
   DemoTrigger,
+  FocusPhase,
   PetFacing,
   PetState,
   Settings,
@@ -67,6 +68,8 @@ let petState: PetState = "idle";
 let petFacing: PetFacing = "right";
 let blockingMode: BlockingMode = null;
 let focusActive = false;
+let focusPhase: FocusPhase = null;
+let focusCycleCurrent = 0;
 let focusStartedAt: number | null = null;
 let breakRunTimer: NodeJS.Timeout | null = null;
 let breakRunCountdownTimer: NodeJS.Timeout | null = null;
@@ -122,6 +125,19 @@ function setSettings(next: Settings): void {
   scheduleReminderTimers();
   scheduleDistractionDetection();
   updateTrayMenu();
+}
+
+function addCurrentAppToBlockedApps(): void {
+  const appName = distractionStatus.activeApp.trim();
+  if (!appName) return;
+  const settings = getSettings();
+  if (settings.distractionBlockedApps.some((entry) => entry.toLowerCase() === appName.toLowerCase())) {
+    return;
+  }
+  setSettings({
+    ...settings,
+    distractionBlockedApps: [...settings.distractionBlockedApps, appName]
+  });
 }
 
 function getStatsHistory(): StatsHistory {
@@ -193,7 +209,9 @@ function snapshot(): AppSnapshot {
     petFacing,
     blockingMode,
     dogVisible: Boolean(petWindow?.isVisible()),
-    focusActive
+    focusActive,
+    focusPhase,
+    focusCycleCurrent
   };
 }
 
@@ -226,6 +244,7 @@ function setPetFacing(next: PetFacing): void {
 
 function showBubble(bubble: SpeechBubble): void {
   if (bubbleTimer) clearTimeout(bubbleTimer);
+  setPetWindowHeight(PET_WINDOW.height);
   sendToPet("pet:show-bubble", bubble);
   if (bubble.autoDismissMs) {
     bubbleTimer = setTimeout(() => hideBubble(), bubble.autoDismissMs);
@@ -238,6 +257,7 @@ function hideBubble(): void {
     bubbleTimer = null;
   }
   sendToPet("pet:hide-bubble");
+  setPetWindowHeight(PET_WINDOW.compactHeight);
 }
 
 function rendererUrl(route: "pet" | "settings"): string {
@@ -273,9 +293,9 @@ function initialPetBounds(): Electron.Rectangle {
   const stored = store.get("petPosition");
   const fallback = {
     width: PET_WINDOW.width,
-    height: PET_WINDOW.height,
+    height: PET_WINDOW.compactHeight,
     x: Math.round(workArea.x + workArea.width / 2 - PET_WINDOW.width / 2),
-    y: workArea.y + workArea.height - PET_WINDOW.height
+    y: workArea.y + workArea.height - PET_WINDOW.compactHeight
   };
 
   if (!stored) return fallback;
@@ -292,11 +312,23 @@ function persistPetPosition(): void {
   store.set("petPosition", { x: bounds.x, y: bounds.y });
 }
 
+function setPetWindowHeight(height: number): void {
+  if (!petWindow || petWindow.isDestroyed()) return;
+  const current = petWindow.getBounds();
+  if (current.height === height) return;
+  const next = clampBoundsToWorkArea({
+    ...current,
+    height,
+    y: current.y + current.height - height
+  });
+  petWindow.setBounds(next);
+}
+
 function createPetWindow(): void {
   const bounds = initialPetBounds();
   petWindow = new BrowserWindow({
     width: PET_WINDOW.width,
-    height: PET_WINDOW.height,
+    height: bounds.height,
     x: bounds.x,
     y: bounds.y,
     transparent: true,
@@ -503,9 +535,10 @@ function showPetContextMenu(): void {
 function movePetWithCursor(): void {
   if (!petWindow || petWindow.isDestroyed()) return;
   const cursor = screen.getCursorScreenPoint();
+  const current = petWindow.getBounds();
   const bounds = clampBoundsToWorkArea({
     width: PET_WINDOW.width,
-    height: PET_WINDOW.height,
+    height: current.height,
     x: cursor.x - dragOffset.x,
     y: cursor.y - dragOffset.y
   });
@@ -516,7 +549,7 @@ function startPetDrag(offset: { offsetX: number; offsetY: number }): void {
   if (blockingMode === "breakRun" || !petWindow || petWindow.isDestroyed()) return;
   dragOffset = {
     x: Math.min(Math.max(Math.round(offset.offsetX), 0), PET_WINDOW.width),
-    y: Math.min(Math.max(Math.round(offset.offsetY), 0), PET_WINDOW.height)
+    y: Math.min(Math.max(Math.round(offset.offsetY), 0), petWindow.getBounds().height)
   };
   if (dragTimer) clearInterval(dragTimer);
   movePetWithCursor();
@@ -578,7 +611,7 @@ function movePetForBreakRun(): void {
   const minX = workArea.x + 8;
   const maxX = workArea.x + workArea.width - PET_WINDOW.width - 8;
   const minY = workArea.y + 8;
-  const maxY = workArea.y + workArea.height - PET_WINDOW.height - 8;
+  const maxY = workArea.y + workArea.height - bounds.height - 8;
 
   if (now >= nextBreakRunTurnAt && Math.random() < 0.45) {
     breakRunVelocity = chooseBreakRunVelocity();
@@ -698,7 +731,7 @@ async function checkDistractionNow(): Promise<void> {
       error: null
     });
 
-    if (!focusActive || blockingMode === "focusWarning") return;
+    if (!focusActive || focusPhase !== "focus" || blockingMode === "focusWarning") return;
     if (!matchedRule) return;
     if (
       distractionStatus.lastWarningAt &&
@@ -729,7 +762,7 @@ function scheduleDistractionDetection(): void {
   }
 
   const settings = getSettings();
-  if (!settings.distractionDetectionEnabled) {
+  if (!settings.distractionDetectionEnabled || (focusActive && focusPhase !== "focus")) {
     setDistractionStatus({
       state: "idle",
       matchedRule: null,
@@ -747,7 +780,7 @@ function scheduleDistractionDetection(): void {
 
   if (!detectionSupported) return;
 
-  const firstCheckDelay = focusActive ? Math.max(0, settings.distractionGraceSeconds * 1000) : 0;
+  const firstCheckDelay = focusActive && focusPhase === "focus" ? Math.max(0, settings.distractionGraceSeconds * 1000) : 0;
   distractionStartupTimer = setTimeout(() => {
     void checkDistractionNow();
     distractionTimer = setInterval(() => void checkDistractionNow(), DISTRACTION_CHECK_INTERVAL_MS);
@@ -843,47 +876,95 @@ function triggerFocusWarning(rule?: string): void {
   });
 }
 
-function startFocusMode(): void {
-  if (focusActive || blockingMode) return;
-  ensurePetWindowVisible();
-  const settings = getSettings();
-  focusActive = true;
+function clearFocusTimer(): void {
+  if (focusTimer) {
+    clearTimeout(focusTimer);
+    focusTimer = null;
+  }
+}
+
+function beginFocusInterval(settings = getSettings()): void {
+  focusPhase = "focus";
   focusStartedAt = Date.now();
-  blockingMode = null;
-  setPetState("focusGuard");
   focusEndsAt = Date.now() + settings.focusDurationMinutes * 60 * 1000;
-  sendToAll("app:snapshot", snapshot());
+  setPetState("focusGuard");
   showBubble({
     id: "focus-start",
     message: pick(text().bubble.focusStart)(settings.focusDurationMinutes),
     autoDismissMs: 4500
   });
-  if (focusTimer) clearTimeout(focusTimer);
-  focusTimer = setTimeout(
-    () => stopFocusMode(true),
-    settings.focusDurationMinutes * 60 * 1000
-  );
+  clearFocusTimer();
+  focusTimer = setTimeout(() => completeFocusInterval(), settings.focusDurationMinutes * 60 * 1000);
   scheduleDistractionDetection();
+  sendToAll("app:snapshot", snapshot());
+}
+
+function beginPomodoroBreak(settings = getSettings()): void {
+  focusPhase = "break";
+  focusStartedAt = null;
+  focusEndsAt = Date.now() + settings.focusBreakMinutes * 60 * 1000;
+  blockingMode = null;
+  scheduleDistractionDetection();
+  setPetState("focusDone");
+  showBubble({
+    id: "pomodoro-break",
+    message: pick(text().bubble.focusBreakStart)(settings.focusBreakMinutes),
+    autoDismissMs: 4500
+  });
+  clearFocusTimer();
+  focusTimer = setTimeout(() => {
+    focusCycleCurrent += 1;
+    beginFocusInterval(getSettings());
+  }, settings.focusBreakMinutes * 60 * 1000);
+  sendToAll("app:snapshot", snapshot());
+}
+
+function completeFocusInterval(): void {
+  if (!focusActive || focusPhase !== "focus") return;
+  const settings = getSettings();
+  updateStats((stats) => ({
+    ...stats,
+    focusMinutes: stats.focusMinutes + settings.focusDurationMinutes
+  }));
+  if (focusCycleCurrent >= settings.focusPomodoroCount) {
+    stopFocusMode(true);
+    return;
+  }
+  beginPomodoroBreak(settings);
+}
+
+function startFocusMode(): void {
+  if (focusActive || blockingMode) return;
+  ensurePetWindowVisible();
+  const settings = getSettings();
+  focusActive = true;
+  focusPhase = "focus";
+  focusCycleCurrent = 1;
+  focusStartedAt = null;
+  blockingMode = null;
+  beginFocusInterval(settings);
   updateTrayMenu();
 }
 
 function stopFocusMode(completed: boolean): void {
   if (!focusActive) return;
   const startedAt = focusStartedAt ?? Date.now();
+  const shouldCountPartialFocus = !completed && focusPhase === "focus";
   const elapsedMinutes = Math.max(1, Math.round((Date.now() - startedAt) / 60000));
   focusActive = false;
+  focusPhase = null;
+  focusCycleCurrent = 0;
   focusStartedAt = null;
   blockingMode = null;
-  if (focusTimer) {
-    clearTimeout(focusTimer);
-    focusTimer = null;
-  }
+  clearFocusTimer();
   focusEndsAt = null;
   scheduleDistractionDetection();
-  updateStats((stats) => ({
-    ...stats,
-    focusMinutes: stats.focusMinutes + elapsedMinutes
-  }));
+  if (shouldCountPartialFocus) {
+    updateStats((stats) => ({
+      ...stats,
+      focusMinutes: stats.focusMinutes + elapsedMinutes
+    }));
+  }
   sendToAll("app:snapshot", snapshot());
   setPetState("focusDone");
   showBubble({
@@ -995,6 +1076,7 @@ function registerIpc(): void {
   ipcMain.on("demo:trigger", (_event, trigger: DemoTrigger) => triggerDemo(trigger));
   ipcMain.on("focus:start", startFocusMode);
   ipcMain.on("focus:stop", () => stopFocusMode(false));
+  ipcMain.on("distraction:block-current-app", addCurrentAppToBlockedApps);
   ipcMain.on("stats:reset-today", resetTodayStats);
 }
 

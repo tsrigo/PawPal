@@ -151,8 +151,13 @@ export function PetView(): JSX.Element {
 
       {snapshot.focusActive ? (
         <div className="focus-badge">
-          <span>{labels.focus}</span>
+          <span>{snapshot.focusPhase === "break" ? labels.break : labels.focus}</span>
           <strong>{formatFocusCountdown(snapshot.timers.focusEndsAt, now)}</strong>
+          {snapshot.settings.focusPomodoroCount > 1 ? (
+            <em>
+              {snapshot.focusCycleCurrent}/{snapshot.settings.focusPomodoroCount}
+            </em>
+          ) : null}
         </div>
       ) : null}
 

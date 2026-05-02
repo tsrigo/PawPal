@@ -9,6 +9,8 @@ export const DEFAULT_SETTINGS: Settings = {
   hydrationReminderEnabled: true,
   hydrationIntervalMinutes: 90,
   focusDurationMinutes: 25,
+  focusBreakMinutes: 5,
+  focusPomodoroCount: 4,
   distractionDetectionEnabled: false,
   distractionGraceSeconds: 8,
   distractionBlockedApps: [
@@ -16,6 +18,7 @@ export const DEFAULT_SETTINGS: Settings = {
     "Discord",
     "Telegram",
     "WeChat",
+    "Weixin",
     "QQ"
   ],
   distractionBlockedKeywords: [

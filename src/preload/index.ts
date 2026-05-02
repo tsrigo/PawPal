@@ -33,6 +33,7 @@ const api = {
   },
   startFocus: (): void => ipcRenderer.send("focus:start"),
   stopFocus: (): void => ipcRenderer.send("focus:stop"),
+  blockCurrentApp: (): void => ipcRenderer.send("distraction:block-current-app"),
   resetToday: (): void => ipcRenderer.send("stats:reset-today"),
   onPetState: (callback: (state: PetState) => void): Unsubscribe =>
     onChannel("pet:set-state", callback),

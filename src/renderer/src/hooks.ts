@@ -33,6 +33,8 @@ export function useSnapshot(): AppSnapshot {
     petFacing: "right",
     blockingMode: null,
     focusActive: false,
+    focusPhase: null,
+    focusCycleCurrent: 0,
     dogVisible: true
   });
 
