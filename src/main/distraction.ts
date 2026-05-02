@@ -26,7 +26,7 @@ return frontApp & linefeed & frontWindow
 `;
 }
 
-export function readActiveWindow(): Promise<ActiveWindowInfo> {
+function readMacActiveWindow(): Promise<ActiveWindowInfo> {
   return new Promise((resolve, reject) => {
     execFile("/usr/bin/osascript", ["-e", activeWindowScript()], { timeout: 2500 }, (error, stdout) => {
       if (error) {
@@ -40,6 +40,82 @@ export function readActiveWindow(): Promise<ActiveWindowInfo> {
       });
     });
   });
+}
+
+function windowsActiveWindowScript(): string {
+  return `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class ActiveWindow {
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetForegroundWindow();
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+  [DllImport("user32.dll")]
+  public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+"@
+
+$handle = [ActiveWindow]::GetForegroundWindow()
+$titleBuilder = New-Object System.Text.StringBuilder 1024
+[void][ActiveWindow]::GetWindowText($handle, $titleBuilder, $titleBuilder.Capacity)
+$processId = 0
+[void][ActiveWindow]::GetWindowThreadProcessId($handle, [ref]$processId)
+$processName = ""
+if ($processId -gt 0) {
+  try {
+    $processName = (Get-Process -Id $processId -ErrorAction Stop).ProcessName
+  } catch {
+    $processName = ""
+  }
+}
+
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[PSCustomObject]@{
+  appName = $processName
+  windowTitle = $titleBuilder.ToString()
+} | ConvertTo-Json -Compress
+`;
+}
+
+function readWindowsActiveWindow(): Promise<ActiveWindowInfo> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", windowsActiveWindowScript()],
+      { timeout: 2500, windowsHide: true },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(stdout.trim() || "{}") as Partial<ActiveWindowInfo>;
+          resolve({
+            appName: typeof parsed.appName === "string" ? parsed.appName.trim() : "",
+            windowTitle: typeof parsed.windowTitle === "string" ? parsed.windowTitle.trim() : ""
+          });
+        } catch (parseError) {
+          reject(parseError);
+        }
+      }
+    );
+  });
+}
+
+export function supportsActiveWindowDetection(platform = process.platform): boolean {
+  return platform === "darwin" || platform === "win32";
+}
+
+export function readActiveWindow(): Promise<ActiveWindowInfo> {
+  if (process.platform === "darwin") return readMacActiveWindow();
+  if (process.platform === "win32") return readWindowsActiveWindow();
+  return Promise.reject(new Error(`Active-window detection is not supported on ${process.platform}.`));
 }
 
 export function classifyDistraction(active: ActiveWindowInfo, settings: Settings): string | null {

@@ -34,7 +34,7 @@ import {
   SETTINGS_WINDOW,
   STORE_NAME
 } from "./config";
-import { classifyDistraction, isPermissionError, readActiveWindow } from "./distraction";
+import { classifyDistraction, isPermissionError, readActiveWindow, supportsActiveWindowDetection } from "./distraction";
 import { createTrayImage } from "./trayIcon";
 
 type PetPosition = {
@@ -738,12 +738,14 @@ function scheduleDistractionDetection(): void {
     return;
   }
 
+  const detectionSupported = supportsActiveWindowDetection();
+
   setDistractionStatus({
-    state: process.platform === "darwin" ? "watching" : "unsupported",
-    error: process.platform === "darwin" ? null : text().system.unsupportedDistraction
+    state: detectionSupported ? "watching" : "unsupported",
+    error: detectionSupported ? null : text().system.unsupportedDistraction
   });
 
-  if (process.platform !== "darwin") return;
+  if (!detectionSupported) return;
 
   const firstCheckDelay = focusActive ? Math.max(0, settings.distractionGraceSeconds * 1000) : 0;
   distractionStartupTimer = setTimeout(() => {
