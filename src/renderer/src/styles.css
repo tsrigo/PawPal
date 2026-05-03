@@ -760,6 +760,117 @@ textarea {
   padding: 14px 0 6px;
 }
 
+.goal-panel {
+  background: rgba(255, 255, 255, 0.46);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin: 10px 0 14px;
+  padding: 12px 14px;
+}
+
+.goal-panel__head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.goal-panel__head h3 {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.2;
+  margin: 0 0 4px;
+}
+
+.goal-panel__head p,
+.goal-panel__error {
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.goal-panel__error {
+  color: var(--warn);
+}
+
+.goal-field,
+.goal-fieldset {
+  display: grid;
+  gap: 7px;
+}
+
+.goal-field span,
+.goal-fieldset__head {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.goal-field input {
+  background: #fff;
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  outline: 0;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.goal-field input:focus {
+  border-color: var(--accent);
+}
+
+.goal-fieldset__head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.goal-status-list {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.goal-status-list li {
+  align-items: center;
+  background: rgba(60, 47, 28, 0.04);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.goal-status-list li.is-current {
+  border-color: rgba(182, 125, 58, 0.55);
+}
+
+.goal-status-list span {
+  color: var(--ink);
+  flex: 1;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-status-list strong {
+  color: var(--ink-soft);
+  flex: 0 0 auto;
+  font-size: 11.5px;
+}
+
 .pref-block {
   border-top: 1px solid var(--rule);
   padding: 10px 0 4px;

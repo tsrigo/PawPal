@@ -14,6 +14,9 @@ import type {
   BlockingMode,
   DistractionStatus,
   DemoTrigger,
+  FocusGoal,
+  FocusGoalInput,
+  FocusGoalSession,
   FocusPhase,
   PetFacing,
   PetState,
@@ -48,6 +51,8 @@ type StoreSchema = {
   settings: Settings;
   stats: TodayStats;
   statsHistory: StatsHistory;
+  goalDraft?: FocusGoalInput | null;
+  goalSession?: FocusGoalSession | null;
   petPosition?: PetPosition;
 };
 
@@ -58,7 +63,9 @@ const store = new Store<StoreSchema>({
   defaults: {
     settings: DEFAULT_SETTINGS,
     stats: createEmptyStats(),
-    statsHistory: {}
+    statsHistory: {},
+    goalDraft: null,
+    goalSession: null
   }
 });
 
@@ -95,6 +102,7 @@ let breakRunFormatter: ((seconds: number) => string) | null = null;
 let nextBreakRunTurnAt = 0;
 let breakMutedToday = false;
 let dragOffset: PetPosition = { x: 0, y: 0 };
+let focusGoalInputOpen = false;
 let distractionStatus: DistractionStatus = {
   state: "idle",
   activeApp: "",
@@ -180,7 +188,9 @@ function normalizeStats(stats: Partial<TodayStats> | undefined, date = todayKey(
     focusByHour: normalizeDurationMap(stats?.focusByHour),
     distractionByHour: normalizeDurationMap(stats?.distractionByHour),
     focusByWindow: normalizeDurationMap(stats?.focusByWindow),
-    distractionByWindow: normalizeDurationMap(stats?.distractionByWindow)
+    distractionByWindow: normalizeDurationMap(stats?.distractionByWindow),
+    goalsCompleted: normalizeNumber(stats?.goalsCompleted),
+    smallGoalsCompleted: normalizeNumber(stats?.smallGoalsCompleted)
   };
 }
 
@@ -227,6 +237,111 @@ function resetTodayStats(): void {
   store.set("stats", reset);
   saveStatsToHistory(reset);
   sendToAll("stats:updated", reset);
+}
+
+function normalizeGoalTitle(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function createGoal(title: string, now = Date.now()): FocusGoal {
+  return {
+    id: `${now}-${Math.random().toString(36).slice(2, 10)}`,
+    title,
+    status: "inProgress",
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function normalizeGoalInput(input: FocusGoalInput, settings = getSettings()): FocusGoalInput | null {
+  const bigGoalTitle = normalizeGoalTitle(input.bigGoalTitle);
+  const count = Math.max(1, settings.focusPomodoroCount);
+  const smallGoalTitles = Array.from({ length: count }, (_, index) =>
+    normalizeGoalTitle(input.smallGoalTitles[index] ?? "")
+  );
+  if (!bigGoalTitle || !smallGoalTitles[0]) return null;
+  return { bigGoalTitle, smallGoalTitles };
+}
+
+function getGoalDraft(): FocusGoalInput | null {
+  return store.get("goalDraft", null) ?? null;
+}
+
+function setGoalDraft(next: FocusGoalInput | null): void {
+  store.set("goalDraft", next);
+}
+
+function getGoalSession(): FocusGoalSession | null {
+  return store.get("goalSession", null) ?? null;
+}
+
+function setGoalSession(next: FocusGoalSession | null): void {
+  store.set("goalSession", next);
+}
+
+function currentGoalText(): string | null {
+  const session = getGoalSession();
+  if (!session) return null;
+  const currentSmallGoal = session.smallGoals[session.currentSmallGoalIndex];
+  return currentSmallGoal?.title || session.bigGoal.title || null;
+}
+
+function startGoalSession(input: FocusGoalInput): FocusGoalSession | null {
+  const normalized = normalizeGoalInput(input);
+  if (!normalized) return null;
+  const now = Date.now();
+  const session: FocusGoalSession = {
+    id: `goal-session-${now}`,
+    bigGoal: createGoal(normalized.bigGoalTitle, now),
+    smallGoals: normalized.smallGoalTitles.map((title) => createGoal(title || normalized.bigGoalTitle, now)),
+    currentSmallGoalIndex: 0,
+    startedAt: now
+  };
+  setGoalDraft(normalized);
+  setGoalSession(session);
+  focusGoalInputOpen = false;
+  return session;
+}
+
+function markGoalStatus(scope: "big" | "small", status: "completed" | "inProgress"): void {
+  const session = getGoalSession();
+  if (!session) return;
+  const now = Date.now();
+  if (scope === "big") {
+    const wasCompleted = session.bigGoal.status === "completed";
+    const nextSession: FocusGoalSession = {
+      ...session,
+      bigGoal: {
+        ...session.bigGoal,
+        status,
+        updatedAt: now,
+        completedAt: status === "completed" ? now : undefined
+      },
+      completedAt: status === "completed" ? now : session.completedAt
+    };
+    setGoalSession(nextSession);
+    if (status === "completed" && !wasCompleted) {
+      updateStats((stats) => ({ ...stats, goalsCompleted: stats.goalsCompleted + 1 }));
+      setGoalDraft(null);
+    }
+    return;
+  }
+
+  const index = session.currentSmallGoalIndex;
+  const target = session.smallGoals[index];
+  if (!target) return;
+  const wasCompleted = target.status === "completed";
+  const nextSmallGoals = [...session.smallGoals];
+  nextSmallGoals[index] = {
+    ...target,
+    status,
+    updatedAt: now,
+    completedAt: status === "completed" ? now : undefined
+  };
+  setGoalSession({ ...session, smallGoals: nextSmallGoals });
+  if (status === "completed" && !wasCompleted) {
+    updateStats((stats) => ({ ...stats, smallGoalsCompleted: stats.smallGoalsCompleted + 1 }));
+  }
 }
 
 function windowStatsKey(active: ActiveWindowInfo | null): string {
@@ -317,7 +432,10 @@ function snapshot(): AppSnapshot {
     dogVisible: Boolean(petWindow?.isVisible()),
     focusActive,
     focusPhase,
-    focusCycleCurrent
+    focusCycleCurrent,
+    goalSession: getGoalSession(),
+    goalDraft: getGoalDraft(),
+    focusGoalInputOpen
   };
 }
 
@@ -488,6 +606,7 @@ function ensurePetWindowVisible(): void {
 function createSettingsWindow(): void {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.focus();
+    publishSnapshot();
     return;
   }
 
@@ -522,6 +641,13 @@ function createSettingsWindow(): void {
   });
 }
 
+function requestFocusGoalInput(): void {
+  if (focusActive || blockingMode) return;
+  focusGoalInputOpen = true;
+  createSettingsWindow();
+  publishSnapshot();
+}
+
 function createTray(): void {
   tray = new Tray(createTrayImage());
   tray.setToolTip(APP_NAME);
@@ -550,7 +676,7 @@ function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
       label: focusActive ? labels.stopFocusMode : labels.startFocusMode,
       click: () => {
         if (focusActive) stopFocusMode(true);
-        else startFocusMode();
+        else requestFocusGoalInput();
       }
     },
     ...(app.isPackaged
@@ -612,7 +738,7 @@ function showPetContextMenu(): void {
       label: focusActive ? labels.stopFocusMode : labels.startFocusMode,
       click: () => {
         if (focusActive) stopFocusMode(false);
-        else startFocusMode();
+        else requestFocusGoalInput();
       }
     },
     ...(app.isPackaged
@@ -837,7 +963,7 @@ async function checkDistractionNow(): Promise<void> {
       error: null
     });
 
-    if (!focusActive || focusPhase !== "focus" || blockingMode === "focusWarning") return;
+    if (!focusActive || focusPhase !== "focus" || blockingMode) return;
     if (!matchedRule) {
       lastFocusWindow = active;
       return;
@@ -981,9 +1107,10 @@ function pauseFocusForDistraction(active: ActiveWindowInfo, rule?: string): void
   setPetState("focusAlert");
   sendToAll("app:snapshot", snapshot());
   const labels = text();
+  const goalText = currentGoalText();
   showBubble({
     id: "focus-warning",
-    message: pick(labels.bubble.focusWarning)(rule ?? "?"),
+    message: goalText ? labels.bubble.goalDistraction(goalText) : pick(labels.bubble.focusWarning)(rule ?? "?"),
     actions: [
       { id: "focus:back", label: labels.actions.focusBack, kind: "primary" },
       { id: "focus:end", label: labels.actions.focusEnd }
@@ -1025,9 +1152,10 @@ function triggerFocusWarning(rule?: string): void {
   setPetState("focusAlert");
   sendToAll("app:snapshot", snapshot());
   const labels = text();
+  const goalText = currentGoalText();
   showBubble({
     id: "focus-warning",
-    message: pick(labels.bubble.focusWarning)(rule ?? "?"),
+    message: goalText ? labels.bubble.goalDistraction(goalText) : pick(labels.bubble.focusWarning)(rule ?? "?"),
     actions: [
       { id: "focus:back", label: labels.actions.focusBack, kind: "primary" },
       { id: "focus:end", label: labels.actions.focusEnd }
@@ -1042,6 +1170,59 @@ function clearFocusTimer(): void {
   }
 }
 
+function showCurrentGoalReminder(settings = getSettings()): void {
+  const session = getGoalSession();
+  if (!session) return;
+  const currentSmallGoal = session.smallGoals[session.currentSmallGoalIndex];
+  const message = currentSmallGoal?.title
+    ? text().bubble.smallGoalStart(currentSmallGoal.title)
+    : text().bubble.bigGoalStart(session.bigGoal.title);
+  showBubble({
+    id: "goal-start",
+    message,
+    autoDismissMs: Math.min(60_000, settings.focusDurationMinutes * 60_000)
+  });
+}
+
+function promptSmallGoalCompletion(): void {
+  const session = getGoalSession();
+  const smallGoal = session?.smallGoals[session.currentSmallGoalIndex];
+  if (!session || !smallGoal) {
+    beginPomodoroBreak(getSettings());
+    return;
+  }
+  blockingMode = "goalPrompt";
+  setPetState("focusDone");
+  sendToAll("app:snapshot", snapshot());
+  showBubble({
+    id: "goal-small-complete",
+    message: text().bubble.smallGoalComplete(smallGoal.title),
+    actions: [
+      { id: "goal:small-completed", label: text().actions.goalCompleted, kind: "primary" },
+      { id: "goal:small-progress", label: text().actions.goalInProgress }
+    ]
+  });
+}
+
+function promptBigGoalCompletion(): void {
+  const session = getGoalSession();
+  if (!session) {
+    stopFocusMode(true);
+    return;
+  }
+  blockingMode = "goalPrompt";
+  setPetState("focusDone");
+  sendToAll("app:snapshot", snapshot());
+  showBubble({
+    id: "goal-big-complete",
+    message: text().bubble.bigGoalComplete(session.bigGoal.title),
+    actions: [
+      { id: "goal:big-completed", label: text().actions.goalCompleted, kind: "primary" },
+      { id: "goal:big-progress", label: text().actions.goalInProgress }
+    ]
+  });
+}
+
 function beginFocusInterval(settings = getSettings()): void {
   focusPhase = "focus";
   focusStartedAt = Date.now();
@@ -1052,11 +1233,7 @@ function beginFocusInterval(settings = getSettings()): void {
   lastFocusWindow = null;
   focusEndsAt = focusStartedAt + settings.focusDurationMinutes * 60 * 1000;
   setPetState("focusGuard");
-  showBubble({
-    id: "focus-start",
-    message: pick(text().bubble.focusStart)(settings.focusDurationMinutes),
-    autoDismissMs: 4500
-  });
+  showCurrentGoalReminder(settings);
   clearFocusTimer();
   focusTimer = setTimeout(() => completeFocusInterval(), settings.focusDurationMinutes * 60 * 1000);
   scheduleDistractionDetection();
@@ -1094,14 +1271,18 @@ function completeFocusInterval(): void {
   recordStatsSpan("focus", focusSegmentStartedAt, Date.now(), lastFocusWindow);
   focusSegmentStartedAt = null;
   if (focusCycleCurrent >= settings.focusPomodoroCount) {
-    stopFocusMode(true);
+    promptBigGoalCompletion();
     return;
   }
-  beginPomodoroBreak(settings);
+  promptSmallGoalCompletion();
 }
 
-function startFocusMode(): void {
+function startFocusMode(input?: FocusGoalInput): void {
   if (focusActive || blockingMode) return;
+  if (input && !startGoalSession(input)) {
+    requestFocusGoalInput();
+    return;
+  }
   ensurePetWindowVisible();
   const settings = getSettings();
   focusActive = true;
@@ -1160,6 +1341,25 @@ function triggerDemo(trigger: DemoTrigger): void {
 }
 
 function handleBubbleAction(actionId: string): void {
+  if (actionId === "goal:small-completed" || actionId === "goal:small-progress") {
+    markGoalStatus("small", actionId === "goal:small-completed" ? "completed" : "inProgress");
+    const session = getGoalSession();
+    if (session) {
+      setGoalSession({
+        ...session,
+        currentSmallGoalIndex: Math.min(session.currentSmallGoalIndex + 1, session.smallGoals.length - 1)
+      });
+    }
+    blockingMode = null;
+    beginPomodoroBreak(getSettings());
+    return;
+  }
+  if (actionId === "goal:big-completed" || actionId === "goal:big-progress") {
+    markGoalStatus("big", actionId === "goal:big-completed" ? "completed" : "inProgress");
+    blockingMode = null;
+    stopFocusMode(true);
+    return;
+  }
   if (actionId === "break-run:done") {
     finishBreakRun();
     return;
@@ -1238,8 +1438,15 @@ function registerIpc(): void {
     setSettings({ ...getSettings(), ...partial });
   });
   ipcMain.on("demo:trigger", (_event, trigger: DemoTrigger) => triggerDemo(trigger));
-  ipcMain.on("focus:start", startFocusMode);
+  ipcMain.on("focus:start", requestFocusGoalInput);
+  ipcMain.on("focus:start-with-goals", (_event, input: FocusGoalInput) => startFocusMode(input));
   ipcMain.on("focus:stop", () => stopFocusMode(false));
+  ipcMain.on("goal:clear-draft", () => {
+    setGoalDraft(null);
+    setGoalSession(null);
+    focusGoalInputOpen = true;
+    publishSnapshot();
+  });
   ipcMain.on("distraction:block-current-app", addCurrentAppToBlockedApps);
   ipcMain.on("stats:reset-today", resetTodayStats);
 }

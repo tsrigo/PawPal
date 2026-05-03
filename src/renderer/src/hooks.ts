@@ -13,7 +13,9 @@ const initialStats: TodayStats = {
   focusByHour: {},
   distractionByHour: {},
   focusByWindow: {},
-  distractionByWindow: {}
+  distractionByWindow: {},
+  goalsCompleted: 0,
+  smallGoalsCompleted: 0
 };
 
 export function useSnapshot(): AppSnapshot {
@@ -43,6 +45,9 @@ export function useSnapshot(): AppSnapshot {
     focusActive: false,
     focusPhase: null,
     focusCycleCurrent: 0,
+    goalSession: null,
+    goalDraft: null,
+    focusGoalInputOpen: false,
     dogVisible: true
   });
 

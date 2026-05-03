@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { JSX, ReactNode } from "react";
 import { i18n, LANGUAGE_OPTIONS, resolveLanguage } from "../../../shared/i18n";
 import { petAppearanceOptions, resolvePetAppearanceId } from "../../../shared/petAppearances";
-import type { DemoTrigger, PetAppearanceId, Settings, TodayStats } from "../../../shared/types";
+import type { DemoTrigger, FocusGoalInput, PetAppearanceId, Settings, TodayStats } from "../../../shared/types";
 import { getPetAsset } from "../assets";
 import { distractionHelp, formatDistractionState, formatTimer, formatTimestamp, localeFor } from "../format";
 import { useNow, useSnapshot } from "../hooks";
@@ -309,12 +309,30 @@ function StatsOverview({ stats, labels }: { stats: TodayStats; labels: SettingsC
   );
 }
 
+function createGoalDraft(count: number, source?: FocusGoalInput | null): FocusGoalInput {
+  return {
+    bigGoalTitle: source?.bigGoalTitle ?? "",
+    smallGoalTitles: Array.from({ length: count }, (_, index) => source?.smallGoalTitles[index] ?? "")
+  };
+}
+
+function currentGoalText(snapshot: ReturnType<typeof useSnapshot>): string | null {
+  const session = snapshot.goalSession;
+  if (!session) return null;
+  return session.smallGoals[session.currentSmallGoalIndex]?.title || session.bigGoal.title;
+}
+
 export function SettingsView(): JSX.Element {
   const snapshot = useSnapshot();
   const { settings, stats } = snapshot;
   const [draft, setDraft] = useState(settings);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [goalDraft, setGoalDraft] = useState<FocusGoalInput>(() =>
+    createGoalDraft(settings.focusPomodoroCount, snapshot.goalDraft)
+  );
+  const [smallGoalsOpen, setSmallGoalsOpen] = useState(false);
+  const [goalError, setGoalError] = useState("");
   const now = useNow();
   const savedSettingsKey = JSON.stringify(settings);
   const language = resolveLanguage(draft.language);
@@ -331,6 +349,12 @@ export function SettingsView(): JSX.Element {
   }, [savedSettingsKey, settings]);
 
   useEffect(() => {
+    setGoalDraft((current) =>
+      createGoalDraft(settings.focusPomodoroCount, snapshot.goalDraft ?? current)
+    );
+  }, [settings.focusPomodoroCount, snapshot.goalDraft]);
+
+  useEffect(() => {
     if (!settingsDirty) return;
     const timer = window.setTimeout(() => {
       window.pawpal.updateSettings(draft);
@@ -344,10 +368,39 @@ export function SettingsView(): JSX.Element {
     setSettingsDirty(true);
   }
 
+  function updateGoalDraft(partial: Partial<FocusGoalInput>): void {
+    setGoalDraft((current) => ({
+      ...current,
+      ...partial
+    }));
+    setGoalError("");
+  }
+
+  function updateSmallGoal(index: number, value: string): void {
+    setGoalDraft((current) => {
+      const nextSmallGoals = [...current.smallGoalTitles];
+      nextSmallGoals[index] = value;
+      return { ...current, smallGoalTitles: nextSmallGoals };
+    });
+    setGoalError("");
+  }
+
+  function startWithGoals(): void {
+    const next = createGoalDraft(draft.focusPomodoroCount, goalDraft);
+    if (!next.bigGoalTitle.trim() || !next.smallGoalTitles[0]?.trim()) {
+      setGoalError(labels.goalRequired);
+      return;
+    }
+    window.pawpal.startFocusWithGoals(next);
+  }
+
   const currentApp = snapshot.distraction.activeApp.trim();
   const canAddCurrentApp =
     Boolean(currentApp) &&
     !draft.distractionBlockedApps.some((entry) => entry.toLowerCase() === currentApp.toLowerCase());
+  const goalPanelOpen = snapshot.focusGoalInputOpen || Boolean(snapshot.goalSession);
+  const visibleSmallGoalCount = smallGoalsOpen ? draft.focusPomodoroCount : 1;
+  const activeGoalText = currentGoalText(snapshot);
 
   return (
     <main className="prefs">
@@ -463,6 +516,91 @@ export function SettingsView(): JSX.Element {
 
       <section className="prefs__group">
         <h2 className="prefs__group-title">{labels.focus}</h2>
+        {goalPanelOpen ? (
+          <div className="goal-panel">
+            <div className="goal-panel__head">
+              <div>
+                <h3>{labels.goalPlanning}</h3>
+                <p>{activeGoalText ? `${labels.currentGoal}: ${activeGoalText}` : labels.goalInputHint}</p>
+              </div>
+              {!snapshot.focusActive ? (
+                <button
+                  type="button"
+                  className="text-link"
+                  onClick={() => {
+                    window.pawpal.clearGoalDraft();
+                    setGoalDraft(createGoalDraft(draft.focusPomodoroCount));
+                  }}
+                >
+                  {labels.clearGoalDraft}
+                </button>
+              ) : null}
+            </div>
+            {!snapshot.focusActive ? (
+              <>
+                <label className="goal-field">
+                  <span>{labels.bigGoal}</span>
+                  <input
+                    value={goalDraft.bigGoalTitle}
+                    placeholder={labels.bigGoalPlaceholder}
+                    onChange={(event) => updateGoalDraft({ bigGoalTitle: event.target.value })}
+                  />
+                </label>
+                <div className="goal-fieldset">
+                  <div className="goal-fieldset__head">
+                    <span>{labels.smallGoals}</span>
+                    {draft.focusPomodoroCount > 1 ? (
+                      <button
+                        type="button"
+                        className="text-link"
+                        onClick={() => setSmallGoalsOpen((open) => !open)}
+                      >
+                        {smallGoalsOpen ? labels.collapseSmallGoals : labels.expandSmallGoals}
+                      </button>
+                    ) : null}
+                  </div>
+                  {Array.from({ length: visibleSmallGoalCount }, (_, index) => (
+                    <label className="goal-field" key={index}>
+                      <span>{index + 1}</span>
+                      <input
+                        value={goalDraft.smallGoalTitles[index] ?? ""}
+                        placeholder={labels.smallGoalPlaceholder(index + 1)}
+                        onChange={(event) => updateSmallGoal(index, event.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+                {goalError ? <p className="goal-panel__error">{goalError}</p> : null}
+                <div className="prefs__inline-actions">
+                  <button type="button" className="pref-button is-primary" onClick={startWithGoals}>
+                    {labels.startWithGoals}
+                  </button>
+                </div>
+              </>
+            ) : snapshot.goalSession ? (
+              <ol className="goal-status-list">
+                <li>
+                  <span>{snapshot.goalSession.bigGoal.title}</span>
+                  <strong>
+                    {snapshot.goalSession.bigGoal.status === "completed"
+                      ? labels.goalCompletedStatus
+                      : labels.goalInProgressStatus}
+                  </strong>
+                </li>
+                {snapshot.goalSession.smallGoals.map((goal, index) => (
+                  <li key={goal.id} className={index === snapshot.goalSession?.currentSmallGoalIndex ? "is-current" : ""}>
+                    <span>{goal.title}</span>
+                    <strong>
+                      {goal.status === "completed"
+                        ? labels.goalCompletedStatus
+                        : labels.goalInProgressStatus}
+                    </strong>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+          </div>
+        ) : null}
         <Row
           label={labels.focusDuration}
           control={
@@ -555,7 +693,7 @@ export function SettingsView(): JSX.Element {
             <button type="button" className="pref-button" onClick={window.pawpal.stopFocus}>
               {labels.stopFocus}
             </button>
-          ) : (
+          ) : goalPanelOpen ? null : (
             <button type="button" className="pref-button is-primary" onClick={window.pawpal.startFocus}>
               {labels.startFocus}
             </button>

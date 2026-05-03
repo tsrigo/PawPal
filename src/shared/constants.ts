@@ -72,6 +72,8 @@ export function createEmptyStats(date = todayKey()): TodayStats {
     focusByHour: {},
     distractionByHour: {},
     focusByWindow: {},
-    distractionByWindow: {}
+    distractionByWindow: {},
+    goalsCompleted: 0,
+    smallGoalsCompleted: 0
   };
 }

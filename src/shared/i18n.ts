@@ -79,7 +79,12 @@ export const I18N = {
         "好，我继续盯着~",
         "嗯！回去干活吧",
         "我也继续专心啦"
-      ]
+      ],
+      bigGoalStart: (goal: string) => `本轮目标：${goal}`,
+      smallGoalStart: (goal: string) => `这个番茄：${goal}`,
+      goalDistraction: (goal: string) => `不要忘记你的目标是 ${goal}`,
+      smallGoalComplete: (goal: string) => `这个小目标完成了吗？${goal}`,
+      bigGoalComplete: (goal: string) => `大目标完成了吗？${goal}`
     },
     actions: {
       breakDone: "我站起来了",
@@ -89,7 +94,9 @@ export const I18N = {
       hydrationDone: "我喝水了",
       hydrationSnooze: "稍后提醒",
       focusBack: "回去工作",
-      focusEnd: "结束专注"
+      focusEnd: "结束专注",
+      goalCompleted: "已完成",
+      goalInProgress: "继续进行中"
     },
     menu: {
       showDog: "显示小狗",
@@ -121,6 +128,20 @@ export const I18N = {
       enableHydrationReminder: "开启喝水提醒",
       hydrationInterval: "喝水间隔",
       focus: "专注",
+      goalPlanning: "目标",
+      bigGoal: "大目标",
+      smallGoals: "小目标",
+      currentGoal: "当前目标",
+      goalInputHint: "开始专注前先写下本轮目标。",
+      bigGoalPlaceholder: "例如：写完周报",
+      smallGoalPlaceholder: (index: number) => `第 ${index} 个番茄的小目标`,
+      expandSmallGoals: "展开全部小目标",
+      collapseSmallGoals: "收起小目标",
+      clearGoalDraft: "清空目标",
+      startWithGoals: "带目标开始",
+      goalCompletedStatus: "已完成",
+      goalInProgressStatus: "进行中",
+      goalRequired: "请填写大目标和第一个小目标。",
       focusDuration: "专注时长",
       focusBreakDuration: "休息时长",
       pomodoroCount: "番茄钟个数",
@@ -265,7 +286,12 @@ export const I18N = {
         "Good, I'll keep watching~",
         "Mm! Back to work then",
         "I'll keep focusing too~"
-      ]
+      ],
+      bigGoalStart: (goal: string) => `Goal for this round: ${goal}`,
+      smallGoalStart: (goal: string) => `This pomodoro: ${goal}`,
+      goalDistraction: (goal: string) => `Don't forget your goal is ${goal}`,
+      smallGoalComplete: (goal: string) => `Did you finish this small goal? ${goal}`,
+      bigGoalComplete: (goal: string) => `Did you finish the big goal? ${goal}`
     },
     actions: {
       breakDone: "I stood up",
@@ -275,7 +301,9 @@ export const I18N = {
       hydrationDone: "I drank water",
       hydrationSnooze: "Remind later",
       focusBack: "Back to work",
-      focusEnd: "End Focus"
+      focusEnd: "End Focus",
+      goalCompleted: "Completed",
+      goalInProgress: "Still in progress"
     },
     menu: {
       showDog: "Show Dog",
@@ -307,6 +335,20 @@ export const I18N = {
       enableHydrationReminder: "Enable Hydration Reminder",
       hydrationInterval: "Hydration Interval",
       focus: "Focus",
+      goalPlanning: "Goals",
+      bigGoal: "Big Goal",
+      smallGoals: "Small Goals",
+      currentGoal: "Current Goal",
+      goalInputHint: "Set your goals before starting focus.",
+      bigGoalPlaceholder: "Example: finish the weekly report",
+      smallGoalPlaceholder: (index: number) => `Small goal for pomodoro ${index}`,
+      expandSmallGoals: "Expand Small Goals",
+      collapseSmallGoals: "Collapse Small Goals",
+      clearGoalDraft: "Clear Goals",
+      startWithGoals: "Start with Goals",
+      goalCompletedStatus: "Completed",
+      goalInProgressStatus: "In progress",
+      goalRequired: "Fill in the big goal and first small goal.",
       focusDuration: "Focus Duration",
       focusBreakDuration: "Break Duration",
       pomodoroCount: "Pomodoros",

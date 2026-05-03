@@ -33,9 +33,34 @@ export type SpeechBubble = {
   autoDismissMs?: number;
 };
 
-export type BlockingMode = "break" | "breakRun" | "hydration" | "focusWarning" | null;
+export type BlockingMode = "break" | "breakRun" | "hydration" | "focusWarning" | "goalPrompt" | null;
 
 export type FocusPhase = "focus" | "break" | null;
+
+export type GoalStatus = "completed" | "inProgress";
+
+export type FocusGoal = {
+  id: string;
+  title: string;
+  status: GoalStatus;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+};
+
+export type FocusGoalSession = {
+  id: string;
+  bigGoal: FocusGoal;
+  smallGoals: FocusGoal[];
+  currentSmallGoalIndex: number;
+  startedAt: number;
+  completedAt?: number;
+};
+
+export type FocusGoalInput = {
+  bigGoalTitle: string;
+  smallGoalTitles: string[];
+};
 
 export type Settings = {
   language: Language;
@@ -66,6 +91,8 @@ export type TodayStats = {
   distractionByHour: Record<string, number>;
   focusByWindow: Record<string, number>;
   distractionByWindow: Record<string, number>;
+  goalsCompleted: number;
+  smallGoalsCompleted: number;
 };
 
 export type StatsHistory = Record<string, TodayStats>;
@@ -100,6 +127,9 @@ export type AppSnapshot = {
   focusActive: boolean;
   focusPhase: FocusPhase;
   focusCycleCurrent: number;
+  goalSession: FocusGoalSession | null;
+  goalDraft: FocusGoalInput | null;
+  focusGoalInputOpen: boolean;
   dogVisible: boolean;
 };
 

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   AppSnapshot,
   DemoTrigger,
+  FocusGoalInput,
   PetState,
   Settings,
   SpeechBubble,
@@ -32,7 +33,9 @@ const api = {
     return `pawpal-asset://asset/${encodeURIComponent(relativePath)}`;
   },
   startFocus: (): void => ipcRenderer.send("focus:start"),
+  startFocusWithGoals: (goals: FocusGoalInput): void => ipcRenderer.send("focus:start-with-goals", goals),
   stopFocus: (): void => ipcRenderer.send("focus:stop"),
+  clearGoalDraft: (): void => ipcRenderer.send("goal:clear-draft"),
   blockCurrentApp: (): void => ipcRenderer.send("distraction:block-current-app"),
   resetToday: (): void => ipcRenderer.send("stats:reset-today"),
   onPetState: (callback: (state: PetState) => void): Unsubscribe =>
