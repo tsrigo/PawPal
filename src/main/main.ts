@@ -1,9 +1,12 @@
+import { writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, ipcMain, Menu, net, protocol, screen, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, Tray } from "electron";
 import Store from "electron-store";
 import {
+  BUILTIN_TASKS,
   createEmptyStats,
+  createEmptyTaskStat,
   DEFAULT_SETTINGS,
   todayKey
 } from "../shared/constants";
@@ -23,6 +26,9 @@ import type {
   Settings,
   StatsHistory,
   SpeechBubble,
+  Task,
+  TaskStat,
+  TaskType,
   TodayStats
 } from "../shared/types";
 import {
@@ -36,9 +42,16 @@ import {
   PRELOAD_PATH,
   RENDERER_HTML_PATH,
   SETTINGS_WINDOW,
-  STORE_NAME
+  STORE_NAME,
+  TASK_IDLE_THRESHOLD_MS
 } from "./config";
-import { classifyDistraction, isPermissionError, readActiveWindow, supportsActiveWindowDetection } from "./distraction";
+import {
+  classifyDistraction,
+  classifyTask,
+  isPermissionError,
+  readActiveWindow,
+  supportsActiveWindowDetection
+} from "./distraction";
 import type { ActiveWindowInfo } from "./distraction";
 import { createTrayImage } from "./trayIcon";
 
@@ -103,6 +116,17 @@ let nextBreakRunTurnAt = 0;
 let breakMutedToday = false;
 let dragOffset: PetPosition = { x: 0, y: 0 };
 let focusGoalInputOpen = false;
+const TASK_WINDOW_SAMPLE_INTERVAL_MS = 15_000;
+const AUTO_SWITCH_PIN_MS = 300_000;
+let activeTaskId: string | null = null;
+let taskTimerStartedAt: number | null = null;
+let taskLastFlushAt: number | null = null;
+let taskSaveTimer: NodeJS.Timeout | null = null;
+let lastTaskWindowKey: string | null = null;
+let autoSwitchSuppressedUntil = 0;
+let autoSwitchTimer: NodeJS.Timeout | null = null;
+let leisureEndsAt: number | null = null;
+let leisureTimer: NodeJS.Timeout | null = null;
 let distractionStatus: DistractionStatus = {
   state: "idle",
   activeApp: "",
@@ -112,6 +136,200 @@ let distractionStatus: DistractionStatus = {
   lastWarningAt: null,
   error: null
 };
+
+function getAllTasks(): Task[] {
+  return [...BUILTIN_TASKS, ...getSettings().tasks];
+}
+
+function idleMs(): number {
+  return powerMonitor.getSystemIdleTime() * 1000;
+}
+
+function flushTaskActiveMs(): void {
+  if (!activeTaskId || taskLastFlushAt === null) return;
+  const now = Date.now();
+  const intervalStart = taskLastFlushAt;
+  const elapsed = now - intervalStart;
+  taskLastFlushAt = now;
+  if (elapsed <= 0) return;
+  let credited = elapsed;
+  const idle = idleMs();
+  if (idle >= TASK_IDLE_THRESHOLD_MS) {
+    const idleStart = now - idle;
+    credited = Math.max(0, Math.min(elapsed, idleStart - intervalStart));
+  }
+  if (credited <= 0) return;
+  const windowKey = lastTaskWindowKey ?? "Unknown";
+  updateStats((stats) => {
+    const prev = stats.taskStats[activeTaskId!] ?? createEmptyTaskStat();
+    return {
+      ...stats,
+      taskStats: {
+        ...stats.taskStats,
+        [activeTaskId!]: {
+          ...prev,
+          activeMs: prev.activeMs + credited,
+          activeByWindow: addDuration(prev.activeByWindow, windowKey, credited)
+        }
+      }
+    };
+  });
+}
+
+async function sampleTaskWindow(): Promise<void> {
+  if (!activeTaskId || taskLastFlushAt === null) return;
+  if (supportsActiveWindowDetection()) {
+    try {
+      const active = await readActiveWindow();
+      lastTaskWindowKey = windowStatsKey(active);
+      maybeAutoSwitchTask(active);
+    } catch {
+      // keep previous window key
+    }
+  }
+  flushTaskActiveMs();
+}
+
+function maybeAutoSwitchTask(active: ActiveWindowInfo): void {
+  const settings = getSettings();
+  if (!settings.autoTaskSwitchEnabled) return;
+  if (focusActive) return;
+  if (Date.now() < autoSwitchSuppressedUntil) return;
+  const matchedId = classifyTask(active, [...settings.tasks, ...BUILTIN_TASKS], settings);
+  if (!matchedId || matchedId === activeTaskId) return;
+  activateTask(matchedId, "auto");
+}
+
+function scheduleAutoTaskSwitch(): void {
+  if (autoSwitchTimer) {
+    clearInterval(autoSwitchTimer);
+    autoSwitchTimer = null;
+  }
+  if (!getSettings().autoTaskSwitchEnabled || !supportsActiveWindowDetection()) return;
+  autoSwitchTimer = setInterval(() => {
+    if (activeTaskId || focusActive) return;
+    void readActiveWindow()
+      .then(maybeAutoSwitchTask)
+      .catch(() => {});
+  }, TASK_WINDOW_SAMPLE_INTERVAL_MS);
+}
+
+function startTaskSampling(): void {
+  if (taskSaveTimer) clearInterval(taskSaveTimer);
+  lastTaskWindowKey = null;
+  taskSaveTimer = setInterval(() => void sampleTaskWindow(), TASK_WINDOW_SAMPLE_INTERVAL_MS);
+  void sampleTaskWindow();
+}
+
+function showTaskSwitcher(): void {
+  const labels = text();
+  const tasks = getAllTasks();
+  const noTaskAction: import("../shared/types").BubbleAction = {
+    id: "task:switch:null",
+    label: labels.bubble.noTask,
+    kind: !activeTaskId ? "primary" : "secondary"
+  };
+  const taskActions: import("../shared/types").BubbleAction[] = tasks.map((task) => ({
+    id: `task:switch:${task.id}`,
+    label: task.name,
+    kind: activeTaskId === task.id ? "primary" : "secondary"
+  }));
+  showBubble({
+    id: "task-switcher",
+    message: labels.bubble.switchTask,
+    actions: [noTaskAction, ...taskActions],
+    autoDismissMs: 10_000
+  });
+}
+
+function activateTask(id: string | null, source: "manual" | "auto" = "manual"): void {
+  if (source === "manual") autoSwitchSuppressedUntil = Date.now() + AUTO_SWITCH_PIN_MS;
+  clearLeisureTimer();
+  if (activeTaskId && taskTimerStartedAt) {
+    const sessionStartedAt = taskTimerStartedAt;
+    const prevTaskId = activeTaskId;
+    const prevTaskName = getAllTasks().find((t) => t.id === prevTaskId)?.name ?? "";
+    flushTaskActiveMs();
+    taskTimerStartedAt = null;
+    taskLastFlushAt = null;
+    if (prevTaskName) {
+      const sessionMs = Date.now() - sessionStartedAt;
+      const minutes = Math.round(sessionMs / 60_000);
+      showBubble({
+        id: "task-stopped",
+        message: text().bubble.taskStopped(prevTaskName, minutes),
+        autoDismissMs: 3000
+      });
+    }
+  }
+  if (taskSaveTimer) {
+    clearInterval(taskSaveTimer);
+    taskSaveTimer = null;
+  }
+  lastTaskWindowKey = null;
+
+  activeTaskId = id;
+
+  if (id) {
+    const task = getAllTasks().find((t) => t.id === id);
+    if (task && (task.type !== "deepWork" || !focusActive)) {
+      taskTimerStartedAt = Date.now();
+      taskLastFlushAt = taskTimerStartedAt;
+      startTaskSampling();
+      if (task.type === "leisure") {
+        promptLeisureDuration();
+      } else {
+        showBubble({
+          id: "task-started",
+          message: text().bubble.taskStarted(task.name),
+          autoDismissMs: 2000
+        });
+      }
+    }
+  }
+
+  publishSnapshot();
+  updateTrayMenu();
+}
+
+function clearLeisureTimer(): void {
+  if (leisureTimer) {
+    clearTimeout(leisureTimer);
+    leisureTimer = null;
+  }
+  leisureEndsAt = null;
+}
+
+function promptLeisureDuration(): void {
+  const labels = text();
+  showBubble({
+    id: "leisure-duration",
+    message: labels.bubble.leisurePrompt,
+    actions: [
+      { id: "leisure:limit:15", label: `15${labels.settings.minuteUnit}`, kind: "primary" },
+      { id: "leisure:limit:30", label: `30${labels.settings.minuteUnit}` },
+      { id: "leisure:limit:60", label: `60${labels.settings.minuteUnit}` },
+      { id: "leisure:limit:0", label: labels.bubble.leisureNoLimit, kind: "secondary" }
+    ],
+    autoDismissMs: 12_000
+  });
+}
+
+function triggerLeisureTimeUp(): void {
+  clearLeisureTimer();
+  ensurePetWindowVisible();
+  setPetState("sad");
+  const labels = text();
+  showBubble({
+    id: "leisure-timeup",
+    message: labels.bubble.leisureTimeUp,
+    actions: [
+      { id: "leisure:limit:15", label: labels.bubble.leisureExtend },
+      { id: "task:switch:null", label: labels.bubble.leisureStop, kind: "primary" }
+    ]
+  });
+  publishSnapshot();
+}
 
 function getSettings(): Settings {
   const stored = store.get("settings");
@@ -138,6 +356,7 @@ function setSettings(next: Settings): void {
   settingsWindow?.setTitle(`${APP_NAME} ${text().menu.settings}`);
   scheduleReminderTimers();
   scheduleDistractionDetection();
+  scheduleAutoTaskSwitch();
   updateTrayMenu();
 }
 
@@ -171,6 +390,25 @@ function normalizeDurationMap(value: unknown): Record<string, number> {
   );
 }
 
+function normalizeTaskStat(value: unknown): TaskStat {
+  const v = value && typeof value === "object" ? (value as Partial<TaskStat>) : {};
+  return {
+    focusMs: normalizeNumber(v.focusMs),
+    distractionMs: normalizeNumber(v.distractionMs),
+    activeMs: normalizeNumber(v.activeMs),
+    focusByWindow: normalizeDurationMap(v.focusByWindow),
+    distractionByWindow: normalizeDurationMap(v.distractionByWindow),
+    activeByWindow: normalizeDurationMap(v.activeByWindow)
+  };
+}
+
+function normalizeTaskStats(value: unknown): Record<string, TaskStat> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([id, stat]) => [id, normalizeTaskStat(stat)])
+  );
+}
+
 function normalizeStats(stats: Partial<TodayStats> | undefined, date = todayKey()): TodayStats {
   const base = createEmptyStats(typeof stats?.date === "string" ? stats.date : date);
   const focusMs = normalizeNumber(stats?.focusMs) || normalizeNumber(stats?.focusMinutes) * 60_000;
@@ -190,7 +428,8 @@ function normalizeStats(stats: Partial<TodayStats> | undefined, date = todayKey(
     focusByWindow: normalizeDurationMap(stats?.focusByWindow),
     distractionByWindow: normalizeDurationMap(stats?.distractionByWindow),
     goalsCompleted: normalizeNumber(stats?.goalsCompleted),
-    smallGoalsCompleted: normalizeNumber(stats?.smallGoalsCompleted)
+    smallGoalsCompleted: normalizeNumber(stats?.smallGoalsCompleted),
+    taskStats: normalizeTaskStats(stats?.taskStats)
   };
 }
 
@@ -259,7 +498,7 @@ function normalizeGoalInput(input: FocusGoalInput, settings = getSettings()): Fo
   const smallGoalTitles = Array.from({ length: count }, (_, index) =>
     normalizeGoalTitle(input.smallGoalTitles[index] ?? "")
   );
-  if (!bigGoalTitle || !smallGoalTitles[0]) return null;
+  if (!bigGoalTitle) return null;
   return { bigGoalTitle, smallGoalTitles };
 }
 
@@ -344,13 +583,26 @@ function markGoalStatus(scope: "big" | "small", status: "completed" | "inProgres
   }
 }
 
+const KNOWN_BROWSERS = ["msedge", "chrome", "firefox", "opera", "brave", "vivaldi", "arc", "safari", "iexplore"];
+
+function browserSiteLabel(title: string): string {
+  const label = title.replace(/\s+[-—–]\s+[^-—–]+$/u, "").trim() || title;
+  const lower = label.toLowerCase();
+  const titleLower = title.toLowerCase();
+  const keyword = getSettings()
+    .distractionBlockedKeywords.map((k) => k.trim())
+    .filter(Boolean)
+    .find((k) => lower.includes(k.toLowerCase()) || titleLower.includes(k.toLowerCase()));
+  return keyword ?? label;
+}
+
 function windowStatsKey(active: ActiveWindowInfo | null): string {
-  const appName = active?.appName.trim();
-  const title = active?.windowTitle.trim();
+  const appName = (active?.appName ?? "").trim();
+  const title = (active?.windowTitle ?? "").trim();
   if (!appName && !title) return "Unknown";
-  if (!title) return appName || "Unknown";
-  if (!appName) return title;
-  return `${appName} - ${title}`;
+  const appLower = appName.toLowerCase();
+  if (KNOWN_BROWSERS.some((b) => appLower.includes(b)) && title) return browserSiteLabel(title);
+  return appName || title || "Unknown";
 }
 
 function addDuration(target: Record<string, number>, key: string, durationMs: number): Record<string, number> {
@@ -394,6 +646,8 @@ function recordStatsSpan(
   const durationMs = endedAt - startedAt;
   const windowKey = windowStatsKey(active);
   updateStats((stats) => {
+    const taskId = activeTaskId;
+    const prevTask = taskId ? (stats.taskStats[taskId] ?? createEmptyTaskStat()) : null;
     if (kind === "focus") {
       const focusMs = stats.focusMs + durationMs;
       return {
@@ -401,14 +655,30 @@ function recordStatsSpan(
         focusMs,
         focusMinutes: Math.round(focusMs / 60_000),
         focusByHour: addHourlyDuration(stats.focusByHour, startedAt, endedAt),
-        focusByWindow: addDuration(stats.focusByWindow, windowKey, durationMs)
+        focusByWindow: addDuration(stats.focusByWindow, windowKey, durationMs),
+        taskStats: taskId && prevTask ? {
+          ...stats.taskStats,
+          [taskId]: {
+            ...prevTask,
+            focusMs: prevTask.focusMs + durationMs,
+            focusByWindow: addDuration(prevTask.focusByWindow, windowKey, durationMs)
+          }
+        } : stats.taskStats
       };
     }
     return {
       ...stats,
       distractionMs: stats.distractionMs + durationMs,
       distractionByHour: addHourlyDuration(stats.distractionByHour, startedAt, endedAt),
-      distractionByWindow: addDuration(stats.distractionByWindow, windowKey, durationMs)
+      distractionByWindow: addDuration(stats.distractionByWindow, windowKey, durationMs),
+      taskStats: taskId && prevTask ? {
+        ...stats.taskStats,
+        [taskId]: {
+          ...prevTask,
+          distractionMs: prevTask.distractionMs + durationMs,
+          distractionByWindow: addDuration(prevTask.distractionByWindow, windowKey, durationMs)
+        }
+      } : stats.taskStats
     };
   });
 }
@@ -435,7 +705,10 @@ function snapshot(): AppSnapshot {
     focusCycleCurrent,
     goalSession: getGoalSession(),
     goalDraft: getGoalDraft(),
-    focusGoalInputOpen
+    focusGoalInputOpen,
+    activeTaskId,
+    taskTimerStartedAt: activeTaskId ? taskTimerStartedAt : null,
+    leisureEndsAt
   };
 }
 
@@ -648,6 +921,15 @@ function requestFocusGoalInput(): void {
   publishSnapshot();
 }
 
+function beginFocusEntry(): void {
+  if (focusActive || blockingMode) return;
+  if (activeTaskId) {
+    startFocusMode();
+    return;
+  }
+  requestFocusGoalInput();
+}
+
 function createTray(): void {
   tray = new Tray(createTrayImage());
   tray.setToolTip(APP_NAME);
@@ -676,7 +958,7 @@ function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
       label: focusActive ? labels.stopFocusMode : labels.startFocusMode,
       click: () => {
         if (focusActive) stopFocusMode(true);
-        else requestFocusGoalInput();
+        else beginFocusEntry();
       }
     },
     ...(app.isPackaged
@@ -689,6 +971,23 @@ function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
           { label: labels.demoHappyReaction, click: () => triggerDemo("happy") }
         ]),
     { type: "separator" },
+    {
+      label: text().menu.switchTask,
+      submenu: [
+        {
+          label: text().menu.noTask,
+          type: "radio" as const,
+          checked: !activeTaskId,
+          click: () => activateTask(null)
+        },
+        ...getAllTasks().map((task) => ({
+          label: (activeTaskId === task.id ? "• " : "") + task.name,
+          type: "radio" as const,
+          checked: activeTaskId === task.id,
+          click: () => activateTask(task.id)
+        }))
+      ]
+    },
     { label: labels.settings, click: createSettingsWindow }
   ];
 }
@@ -738,7 +1037,7 @@ function showPetContextMenu(): void {
       label: focusActive ? labels.stopFocusMode : labels.startFocusMode,
       click: () => {
         if (focusActive) stopFocusMode(false);
-        else requestFocusGoalInput();
+        else beginFocusEntry();
       }
     },
     ...(app.isPackaged
@@ -1258,10 +1557,26 @@ function beginPomodoroBreak(settings = getSettings()): void {
     autoDismissMs: 4500
   });
   clearFocusTimer();
-  focusTimer = setTimeout(() => {
-    focusCycleCurrent += 1;
-    beginFocusInterval(getSettings());
-  }, settings.focusBreakMinutes * 60 * 1000);
+  focusTimer = setTimeout(() => promptResumeNextGoal(), settings.focusBreakMinutes * 60 * 1000);
+  sendToAll("app:snapshot", snapshot());
+}
+
+function promptResumeNextGoal(): void {
+  if (!focusActive || focusPhase !== "break") return;
+  clearFocusTimer();
+  focusEndsAt = null;
+  blockingMode = "goalPrompt";
+  const session = getGoalSession();
+  const nextGoal = session?.smallGoals[session.currentSmallGoalIndex];
+  setPetState("focusDone");
+  ensurePetWindowVisible();
+  showBubble({
+    id: "pomodoro-resume",
+    message: nextGoal?.title
+      ? text().bubble.resumeNextGoal(nextGoal.title)
+      : text().bubble.resumeNextGoalGeneric,
+    actions: [{ id: "goal:resume", label: text().actions.goalResume, kind: "primary" }]
+  });
   sendToAll("app:snapshot", snapshot());
 }
 
@@ -1279,9 +1594,22 @@ function completeFocusInterval(): void {
 
 function startFocusMode(input?: FocusGoalInput): void {
   if (focusActive || blockingMode) return;
+  if (!input?.bigGoalTitle && activeTaskId) {
+    const task = getAllTasks().find((t) => t.id === activeTaskId);
+    if (task) {
+      input = { bigGoalTitle: task.name, smallGoalTitles: input?.smallGoalTitles ?? [] };
+    }
+  }
   if (input && !startGoalSession(input)) {
     requestFocusGoalInput();
     return;
+  }
+  if (activeTaskId && taskTimerStartedAt) {
+    flushTaskActiveMs();
+    taskTimerStartedAt = null;
+    taskLastFlushAt = null;
+    lastTaskWindowKey = null;
+    if (taskSaveTimer) { clearInterval(taskSaveTimer); taskSaveTimer = null; }
   }
   ensurePetWindowVisible();
   const settings = getSettings();
@@ -1329,6 +1657,14 @@ function stopFocusMode(completed: boolean): void {
       setPetState("idle");
     }
   }, 2900);
+  if (activeTaskId) {
+    const task = getAllTasks().find((t) => t.id === activeTaskId);
+    if (task && task.type !== "deepWork") {
+      taskTimerStartedAt = Date.now();
+      taskLastFlushAt = taskTimerStartedAt;
+      startTaskSampling();
+    }
+  }
   updateTrayMenu();
 }
 
@@ -1352,6 +1688,13 @@ function handleBubbleAction(actionId: string): void {
     }
     blockingMode = null;
     beginPomodoroBreak(getSettings());
+    return;
+  }
+  if (actionId === "goal:resume") {
+    if (!focusActive || focusPhase !== "break") return;
+    blockingMode = null;
+    focusCycleCurrent += 1;
+    beginFocusInterval(getSettings());
     return;
   }
   if (actionId === "goal:big-completed" || actionId === "goal:big-progress") {
@@ -1419,6 +1762,99 @@ function handleBubbleAction(actionId: string): void {
   }
   if (actionId === "focus:end") {
     stopFocusMode(false);
+    return;
+  }
+  if (actionId.startsWith("leisure:limit:")) {
+    const minutes = Number(actionId.slice("leisure:limit:".length)) || 0;
+    clearLeisureTimer();
+    hideBubble();
+    if (minutes > 0) {
+      leisureEndsAt = Date.now() + minutes * 60_000;
+      leisureTimer = setTimeout(triggerLeisureTimeUp, minutes * 60_000);
+    }
+    publishSnapshot();
+    return;
+  }
+  if (actionId.startsWith("task:switch:")) {
+    const taskId = actionId.slice("task:switch:".length);
+    hideBubble();
+    activateTask(taskId === "null" ? null : taskId);
+  }
+}
+
+function registerPowerMonitor(): void {
+  const onPause = (): void => {
+    if (activeTaskId && taskLastFlushAt !== null) flushTaskActiveMs();
+    taskLastFlushAt = null;
+  };
+  const onResume = (): void => {
+    if (activeTaskId && taskTimerStartedAt !== null) {
+      taskLastFlushAt = Date.now();
+      void sampleTaskWindow();
+    }
+  };
+  powerMonitor.on("suspend", onPause);
+  powerMonitor.on("lock-screen", onPause);
+  powerMonitor.on("resume", onResume);
+  powerMonitor.on("unlock-screen", onResume);
+}
+
+function csvCell(value: string | number): string {
+  const text = String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function buildWorklogCsv(): string {
+  const history: StatsHistory = { ...getStatsHistory() };
+  const today = getStats();
+  history[today.date] = today;
+  const settings = getSettings();
+  const taskNames = new Map<string, string>(
+    [...BUILTIN_TASKS, ...settings.tasks].map((task) => [task.id, task.name])
+  );
+  const toMin = (ms: number): number => Math.round(ms / 60_000);
+
+  const rows: string[] = ["Date,Task,Focus (min),Distraction (min),Active (min),Focus warnings,Breaks,Waters"];
+  for (const date of Object.keys(history).sort()) {
+    const day = normalizeStats(history[date], date);
+    rows.push(
+      [
+        date,
+        "(all)",
+        toMin(day.focusMs),
+        toMin(day.distractionMs),
+        "",
+        day.focusWarnings,
+        day.breaksTaken,
+        day.watersLogged
+      ]
+        .map(csvCell)
+        .join(",")
+    );
+    for (const [taskId, stat] of Object.entries(day.taskStats)) {
+      if (stat.focusMs <= 0 && stat.distractionMs <= 0 && stat.activeMs <= 0) continue;
+      rows.push(
+        [date, taskNames.get(taskId) ?? taskId, toMin(stat.focusMs), toMin(stat.distractionMs), toMin(stat.activeMs), "", "", ""]
+          .map(csvCell)
+          .join(",")
+      );
+    }
+  }
+  return `${rows.join("\r\n")}\r\n`;
+}
+
+async function exportWorklog(): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> {
+  const result = await dialog.showSaveDialog({
+    title: "Export worklog",
+    defaultPath: `pawpal-worklog-${todayKey()}.csv`,
+    filters: [{ name: "CSV", extensions: ["csv"] }]
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  try {
+    await writeFile(result.filePath, `﻿${buildWorklogCsv()}`, "utf8");
+    return { ok: true, path: result.filePath };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -1428,6 +1864,7 @@ function registerIpc(): void {
     if (blockingMode) return;
     happyFeedback(null);
   });
+  ipcMain.on("pet:middle-clicked", showTaskSwitcher);
   ipcMain.on("pet:context-menu", showPetContextMenu);
   ipcMain.on("pet:drag-start", (_event, offset: { offsetX: number; offsetY: number }) =>
     startPetDrag(offset)
@@ -1438,7 +1875,7 @@ function registerIpc(): void {
     setSettings({ ...getSettings(), ...partial });
   });
   ipcMain.on("demo:trigger", (_event, trigger: DemoTrigger) => triggerDemo(trigger));
-  ipcMain.on("focus:start", requestFocusGoalInput);
+  ipcMain.on("focus:start", beginFocusEntry);
   ipcMain.on("focus:start-with-goals", (_event, input: FocusGoalInput) => startFocusMode(input));
   ipcMain.on("focus:stop", () => stopFocusMode(false));
   ipcMain.on("goal:clear-draft", () => {
@@ -1449,6 +1886,34 @@ function registerIpc(): void {
   });
   ipcMain.on("distraction:block-current-app", addCurrentAppToBlockedApps);
   ipcMain.on("stats:reset-today", resetTodayStats);
+  ipcMain.handle("stats:export-worklog", () => exportWorklog());
+  ipcMain.on("task:activate", (_event, taskId: string | null) => {
+    activateTask(taskId);
+  });
+  ipcMain.on("task:add", (_event, name: string, type: TaskType) => {
+    const trimmed = name.trim().slice(0, 50);
+    if (!trimmed) return;
+    const id = `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const task: Task = { id, name: trimmed, type };
+    const settings = getSettings();
+    setSettings({ ...settings, tasks: [...settings.tasks, task] });
+  });
+  ipcMain.on("task:remove", (_event, taskId: string) => {
+    const settings = getSettings();
+    setSettings({ ...settings, tasks: settings.tasks.filter((t) => t.id !== taskId) });
+    if (activeTaskId === taskId) activateTask(null);
+  });
+  ipcMain.on("task:set-rules", (_event, taskId: string, rules: string[]) => {
+    const settings = getSettings();
+    setSettings({
+      ...settings,
+      tasks: settings.tasks.map((t) =>
+        t.id === taskId
+          ? { ...t, matchRules: rules.map((r) => r.trim()).filter(Boolean).slice(0, 20) }
+          : t
+      )
+    });
+  });
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -1479,10 +1944,12 @@ app.whenReady().then(() => {
 
   getStats();
   registerIpc();
+  registerPowerMonitor();
   createPetWindow();
   createTray();
   scheduleReminderTimers();
   scheduleDistractionDetection();
+  scheduleAutoTaskSwitch();
   if (IS_DEV) {
     createSettingsWindow();
   }
@@ -1493,6 +1960,7 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", () => {
+  flushTaskActiveMs();
   for (const timer of [
     breakRunTimer,
     breakRunCountdownTimer,
@@ -1503,7 +1971,10 @@ app.on("before-quit", () => {
     distractionTimer,
     distractionStartupTimer,
     bubbleTimer,
-    dragTimer
+    dragTimer,
+    taskSaveTimer,
+    autoSwitchTimer,
+    leisureTimer
   ]) {
     if (timer) clearTimeout(timer);
   }

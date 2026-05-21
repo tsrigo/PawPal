@@ -10,11 +10,20 @@
     "dev": "electron-vite dev",
     "build": "pnpm typecheck && electron-vite build",
     "typecheck": "tsc --noEmit",
-    "dist": "pnpm build && electron-builder --mac dmg"
+    "dist": "pnpm build && electron-builder --mac dmg",
+    "dist:win": "pnpm build && electron-builder --win nsis"
   },
   "build": {
     "appId": "com.pawpal.app",
     "productName": "PawPal",
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dmg",

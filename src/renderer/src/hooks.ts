@@ -15,7 +15,8 @@ const initialStats: TodayStats = {
   focusByWindow: {},
   distractionByWindow: {},
   goalsCompleted: 0,
-  smallGoalsCompleted: 0
+  smallGoalsCompleted: 0,
+  taskStats: {}
 };
 
 export function useSnapshot(): AppSnapshot {
@@ -48,7 +49,10 @@ export function useSnapshot(): AppSnapshot {
     goalSession: null,
     goalDraft: null,
     focusGoalInputOpen: false,
-    dogVisible: true
+    dogVisible: true,
+    activeTaskId: null,
+    taskTimerStartedAt: null,
+    leisureEndsAt: null
   });
 
   useEffect(() => {

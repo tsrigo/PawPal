@@ -6,6 +6,7 @@ import type {
   PetState,
   Settings,
   SpeechBubble,
+  TaskType,
   TodayStats
 } from "../shared/types";
 
@@ -20,6 +21,7 @@ function onChannel<T>(channel: string, callback: (payload: T) => void): Unsubscr
 const api = {
   getSnapshot: (): Promise<AppSnapshot> => ipcRenderer.invoke("app:get-snapshot"),
   petClicked: (): void => ipcRenderer.send("pet:clicked"),
+  petMiddleClicked: (): void => ipcRenderer.send("pet:middle-clicked"),
   petContextMenu: (): void => ipcRenderer.send("pet:context-menu"),
   petDragStart: (offset: { offsetX: number; offsetY: number }): void =>
     ipcRenderer.send("pet:drag-start", offset),
@@ -38,6 +40,13 @@ const api = {
   clearGoalDraft: (): void => ipcRenderer.send("goal:clear-draft"),
   blockCurrentApp: (): void => ipcRenderer.send("distraction:block-current-app"),
   resetToday: (): void => ipcRenderer.send("stats:reset-today"),
+  exportWorklog: (): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> =>
+    ipcRenderer.invoke("stats:export-worklog"),
+  activateTask: (taskId: string | null): void => ipcRenderer.send("task:activate", taskId),
+  addTask: (name: string, type: TaskType): void => ipcRenderer.send("task:add", name, type),
+  removeTask: (taskId: string): void => ipcRenderer.send("task:remove", taskId),
+  setTaskRules: (taskId: string, rules: string[]): void =>
+    ipcRenderer.send("task:set-rules", taskId, rules),
   onPetState: (callback: (state: PetState) => void): Unsubscribe =>
     onChannel("pet:set-state", callback),
   onShowBubble: (callback: (bubble: SpeechBubble) => void): Unsubscribe =>

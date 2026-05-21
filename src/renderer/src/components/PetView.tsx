@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { JSX, PointerEvent } from "react";
+import type { JSX, MouseEvent, PointerEvent } from "react";
 import { i18n, resolveLanguage } from "../../../shared/i18n";
+import { BUILTIN_TASKS } from "../../../shared/constants";
 import type { PetState, SpeechBubble } from "../../../shared/types";
 import { getPetAsset, getPetAssetVariantCount } from "../assets";
 import { useNow, useSnapshot } from "../hooks";
@@ -130,6 +131,13 @@ export function PetView(): JSX.Element {
     if (drag.dragging) window.pawpal.petDragStop();
   }
 
+  function handleMiddleClick(event: MouseEvent<HTMLButtonElement>): void {
+    if (event.button === 1) {
+      event.preventDefault();
+      window.pawpal.petMiddleClicked();
+    }
+  }
+
   return (
     <main
       className="pet-shell"
@@ -178,13 +186,37 @@ export function PetView(): JSX.Element {
               {snapshot.focusCycleCurrent}/{snapshot.settings.focusPomodoroCount}
             </em>
           ) : null}
+          {snapshot.activeTaskId ? (
+            <small className="focus-badge__task">
+              {[...BUILTIN_TASKS, ...snapshot.settings.tasks].find((t) => t.id === snapshot.activeTaskId)?.name ?? ""}
+            </small>
+          ) : null}
         </div>
+      ) : snapshot.activeTaskId && snapshot.taskTimerStartedAt ? (
+        (() => {
+          const activeTask = [...BUILTIN_TASKS, ...snapshot.settings.tasks].find(
+            (t) => t.id === snapshot.activeTaskId
+          );
+          const leisureCountdown = activeTask?.type === "leisure" && snapshot.leisureEndsAt !== null;
+          return (
+            <div className={`task-badge${leisureCountdown ? " task-badge--leisure" : ""}`}>
+              <span>{activeTask?.name ?? ""}</span>
+              <strong>
+                {leisureCountdown
+                  ? formatFocusCountdown(snapshot.leisureEndsAt, now)
+                  : formatDurationSeconds((now - snapshot.taskTimerStartedAt!) / 1000)}
+              </strong>
+            </div>
+          );
+        })()
       ) : null}
 
       <button
         className={`pet-button state-${state} ${facingClass} ${
           asset.isPlaceholder ? "placeholder-asset" : ""
         }`}
+        onAuxClick={handleMiddleClick}
+        onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
         onPointerCancel={cancelPointer}
         onPointerDown={startPointer}
         onPointerMove={movePointer}

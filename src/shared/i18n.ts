@@ -84,7 +84,18 @@ export const I18N = {
       smallGoalStart: (goal: string) => `这个番茄：${goal}`,
       goalDistraction: (goal: string) => `不要忘记你的目标是 ${goal}`,
       smallGoalComplete: (goal: string) => `这个小目标完成了吗？${goal}`,
-      bigGoalComplete: (goal: string) => `大目标完成了吗？${goal}`
+      bigGoalComplete: (goal: string) => `大目标完成了吗？${goal}`,
+      taskStarted: (name: string) => `开始计时：${name}`,
+      taskStopped: (name: string, minutes: number) => `${name} 结束，共 ${minutes} 分钟`,
+      switchTask: "切换任务",
+      noTask: "无任务",
+      leisurePrompt: "娱乐多久？",
+      leisureNoLimit: "不限时",
+      leisureTimeUp: "时间到啦，别再娱乐啦！",
+      leisureExtend: "再玩一会",
+      leisureStop: "结束娱乐",
+      resumeNextGoal: (goal: string) => `休息完了吗？准备好开始下一个小目标了吗：${goal}`,
+      resumeNextGoalGeneric: "休息完了吗？准备好开始下一个番茄了吗？"
     },
     actions: {
       breakDone: "我站起来了",
@@ -96,7 +107,8 @@ export const I18N = {
       focusBack: "回去工作",
       focusEnd: "结束专注",
       goalCompleted: "已完成",
-      goalInProgress: "继续进行中"
+      goalInProgress: "继续进行中",
+      goalResume: "准备好了，开始"
     },
     menu: {
       showDog: "显示小狗",
@@ -109,7 +121,9 @@ export const I18N = {
       demoHappyReaction: "演示：开心反馈",
       settings: "设置",
       resetToday: "重置今日",
-      quit: "退出"
+      quit: "退出",
+      switchTask: "切换任务",
+      noTask: "无任务"
     },
     settings: {
       title: "设置",
@@ -215,7 +229,34 @@ export const I18N = {
       detectionUnsupportedHelp: "当前系统暂不支持活动窗口检测，分心检测会保持关闭状态。",
       detectionErrorHelp: "活动窗口检测暂时失败。请检查权限后，重新开启分心检测或重启应用。",
       detectionPreviewHelp: "正在预览当前活动窗口。开始专注后，命中规则会触发分心提醒。",
-      detectionFocusHelp: "专注期间正在检测。命中屏蔽应用或关键词会触发分心提醒。"
+      detectionFocusHelp: "专注期间正在检测。命中屏蔽应用或关键词会触发分心提醒。",
+      tasksSection: "任务追踪",
+      activeTask: "当前任务",
+      noActiveTask: "无",
+      stopTask: "停止",
+      addTask: "添加任务",
+      taskNamePlaceholder: "任务名称",
+      taskTypeDeepWork: "深度",
+      taskTypeMisc: "杂活",
+      taskTypeLeisure: "娱乐",
+      todayTaskStats: "今日任务统计",
+      taskFocus: "专注",
+      taskDistraction: "分心",
+      taskActive: "挂钟",
+      taskWindows: "应用分布",
+      myTasks: "我的任务",
+      builtinTasks: "内置",
+      autoTaskSwitch: "自动切换任务",
+      autoTaskSwitchHint: "根据当前窗口自动匹配并切换任务",
+      taskMatchRules: "匹配规则",
+      leisureAutoMatchHint: "自动匹配屏蔽应用和关键词",
+      historySection: "历史记录",
+      range7: "7 天",
+      range30: "30 天",
+      weeklyTaskTotals: "区间任务总计",
+      exportWorklog: "导出 CSV",
+      exportDone: (path: string) => `已导出到 ${path}`,
+      exportFailed: "导出失败"
     },
     system: {
       unsupportedDistraction: "分心检测目前仅支持 macOS。"
@@ -291,7 +332,18 @@ export const I18N = {
       smallGoalStart: (goal: string) => `This pomodoro: ${goal}`,
       goalDistraction: (goal: string) => `Don't forget your goal is ${goal}`,
       smallGoalComplete: (goal: string) => `Did you finish this small goal? ${goal}`,
-      bigGoalComplete: (goal: string) => `Did you finish the big goal? ${goal}`
+      bigGoalComplete: (goal: string) => `Did you finish the big goal? ${goal}`,
+      taskStarted: (name: string) => `Tracking: ${name}`,
+      taskStopped: (name: string, minutes: number) => `${name} done — ${minutes} min`,
+      switchTask: "Switch task",
+      noTask: "No task",
+      leisurePrompt: "How long for leisure?",
+      leisureNoLimit: "No limit",
+      leisureTimeUp: "Time's up — stop the leisure!",
+      leisureExtend: "A bit more",
+      leisureStop: "Stop leisure",
+      resumeNextGoal: (goal: string) => `Break over? Ready to start the next small goal: ${goal}`,
+      resumeNextGoalGeneric: "Break over? Ready to start the next pomodoro?"
     },
     actions: {
       breakDone: "I stood up",
@@ -303,7 +355,8 @@ export const I18N = {
       focusBack: "Back to work",
       focusEnd: "End Focus",
       goalCompleted: "Completed",
-      goalInProgress: "Still in progress"
+      goalInProgress: "Still in progress",
+      goalResume: "Ready, start"
     },
     menu: {
       showDog: "Show Dog",
@@ -316,7 +369,9 @@ export const I18N = {
       demoHappyReaction: "Demo: Happy Reaction",
       settings: "Settings",
       resetToday: "Reset Today",
-      quit: "Quit"
+      quit: "Quit",
+      switchTask: "Switch Task",
+      noTask: "No Task"
     },
     settings: {
       title: "Settings",
@@ -426,7 +481,34 @@ export const I18N = {
       detectionPreviewHelp:
         "Previewing the active window. Start Focus to trigger distraction nudges from matched rules.",
       detectionFocusHelp:
-        "Watching during Focus. Matched blocked apps or keywords will trigger a distraction nudge."
+        "Watching during Focus. Matched blocked apps or keywords will trigger a distraction nudge.",
+      tasksSection: "Task Tracking",
+      activeTask: "Active Task",
+      noActiveTask: "None",
+      stopTask: "Stop",
+      addTask: "Add Task",
+      taskNamePlaceholder: "Task name",
+      taskTypeDeepWork: "Deep Work",
+      taskTypeMisc: "Misc",
+      taskTypeLeisure: "Leisure",
+      todayTaskStats: "Today's Task Stats",
+      taskFocus: "Focus",
+      taskDistraction: "Distracted",
+      taskActive: "Active",
+      taskWindows: "By app",
+      myTasks: "My Tasks",
+      builtinTasks: "Built-in",
+      autoTaskSwitch: "Auto-switch task",
+      autoTaskSwitchHint: "Match and switch tasks based on the foreground window",
+      taskMatchRules: "Match rules",
+      leisureAutoMatchHint: "Auto-matches blocked apps & keywords",
+      historySection: "History",
+      range7: "7 days",
+      range30: "30 days",
+      weeklyTaskTotals: "Task totals",
+      exportWorklog: "Export CSV",
+      exportDone: (path: string) => `Exported to ${path}`,
+      exportFailed: "Export failed"
     },
     system: {
       unsupportedDistraction: "Distraction detection currently supports macOS only."

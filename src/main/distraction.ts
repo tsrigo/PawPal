@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import type { Settings } from "../shared/types";
+import { BUILTIN_TASK_LEISURE_ID } from "../shared/constants";
+import type { Settings, Task } from "../shared/types";
 
 export type ActiveWindowInfo = {
   appName: string;
@@ -149,6 +150,26 @@ export function classifyDistraction(active: ActiveWindowInfo, settings: Settings
     .find((rule) => titleLower.includes(rule) || appNameLower.includes(rule));
   if (blockedKeyword) return `keyword:${blockedKeyword}`;
 
+  return null;
+}
+
+function effectiveTaskRules(task: Task, settings: Settings): string[] {
+  const explicit = (task.matchRules ?? []).map(normalizeRule).filter(Boolean);
+  if (task.id === BUILTIN_TASK_LEISURE_ID) {
+    return [
+      ...explicit,
+      ...settings.distractionBlockedApps.map(normalizeRule),
+      ...settings.distractionBlockedKeywords.map(normalizeRule)
+    ].filter(Boolean);
+  }
+  return explicit;
+}
+
+export function classifyTask(active: ActiveWindowInfo, tasks: Task[], settings: Settings): string | null {
+  const haystack = `${active.appName.trim().toLowerCase()} ${active.windowTitle.trim().toLowerCase()}`;
+  for (const task of tasks) {
+    if (effectiveTaskRules(task, settings).some((rule) => rule && haystack.includes(rule))) return task.id;
+  }
   return null;
 }
 

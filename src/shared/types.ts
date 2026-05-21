@@ -1,5 +1,24 @@
 export type Language = "zh-CN" | "en";
 
+export type TaskType = "deepWork" | "misc" | "leisure";
+
+export type Task = {
+  id: string;
+  name: string;
+  type: TaskType;
+  isBuiltin?: boolean;
+  matchRules?: string[];
+};
+
+export type TaskStat = {
+  focusMs: number;
+  distractionMs: number;
+  activeMs: number;
+  focusByWindow: Record<string, number>;
+  distractionByWindow: Record<string, number>;
+  activeByWindow: Record<string, number>;
+};
+
 export type PetAppearanceId = "lovartPuppy" | "lineDog";
 
 export type PetFacing = "left" | "right";
@@ -77,6 +96,8 @@ export type Settings = {
   distractionGraceSeconds: number;
   distractionBlockedApps: string[];
   distractionBlockedKeywords: string[];
+  tasks: Task[];
+  autoTaskSwitchEnabled: boolean;
 };
 
 export type TodayStats = {
@@ -93,6 +114,7 @@ export type TodayStats = {
   distractionByWindow: Record<string, number>;
   goalsCompleted: number;
   smallGoalsCompleted: number;
+  taskStats: Record<string, TaskStat>;
 };
 
 export type StatsHistory = Record<string, TodayStats>;
@@ -131,6 +153,9 @@ export type AppSnapshot = {
   goalDraft: FocusGoalInput | null;
   focusGoalInputOpen: boolean;
   dogVisible: boolean;
+  activeTaskId: string | null;
+  taskTimerStartedAt: number | null;
+  leisureEndsAt: number | null;
 };
 
 export type DemoTrigger =

@@ -1,4 +1,23 @@
-import type { Settings, TodayStats } from "./types";
+import type { Settings, Task, TaskStat, TodayStats } from "./types";
+
+export const BUILTIN_TASK_MISC_ID = "__misc__";
+export const BUILTIN_TASK_LEISURE_ID = "__leisure__";
+
+export const BUILTIN_TASKS: Task[] = [
+  { id: BUILTIN_TASK_MISC_ID, name: "杂活", type: "misc", isBuiltin: true },
+  { id: BUILTIN_TASK_LEISURE_ID, name: "娱乐", type: "leisure", isBuiltin: true }
+];
+
+export function createEmptyTaskStat(): TaskStat {
+  return {
+    focusMs: 0,
+    distractionMs: 0,
+    activeMs: 0,
+    focusByWindow: {},
+    distractionByWindow: {},
+    activeByWindow: {}
+  };
+}
 
 export const DEFAULT_SETTINGS: Settings = {
   language: "zh-CN",
@@ -13,6 +32,8 @@ export const DEFAULT_SETTINGS: Settings = {
   focusPomodoroCount: 4,
   distractionDetectionEnabled: false,
   distractionGraceSeconds: 8,
+  tasks: [],
+  autoTaskSwitchEnabled: false,
   distractionBlockedApps: [
     "Steam",
     "Discord",
@@ -74,6 +95,7 @@ export function createEmptyStats(date = todayKey()): TodayStats {
     focusByWindow: {},
     distractionByWindow: {},
     goalsCompleted: 0,
-    smallGoalsCompleted: 0
+    smallGoalsCompleted: 0,
+    taskStats: {}
   };
 }

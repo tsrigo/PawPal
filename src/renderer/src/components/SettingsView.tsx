@@ -2,7 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import type { JSX, ReactNode } from "react";
 import { i18n, LANGUAGE_OPTIONS, resolveLanguage } from "../../../shared/i18n";
 import { petAppearanceOptions, resolvePetAppearanceId } from "../../../shared/petAppearances";
-import type { DemoTrigger, FocusGoalInput, PetAppearanceId, Settings, TodayStats } from "../../../shared/types";
+import { BUILTIN_TASKS, createEmptyTaskStat, todayKey } from "../../../shared/constants";
+import type {
+  DemoTrigger,
+  FocusGoalInput,
+  PetAppearanceId,
+  Settings,
+  StatsHistory,
+  Task,
+  TaskStat,
+  TaskType,
+  TodayStats
+} from "../../../shared/types";
 import { getPetAsset } from "../assets";
 import { distractionHelp, formatDistractionState, formatTimer, formatTimestamp, localeFor } from "../format";
 import { useNow, useSnapshot } from "../hooks";
@@ -214,6 +225,42 @@ function topEntries(source: Record<string, number>, limit = 3): Array<[string, n
     .slice(0, limit);
 }
 
+function mergeWindowMaps(...maps: Array<Record<string, number> | undefined>): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const map of maps) {
+    if (!map) continue;
+    for (const [key, duration] of Object.entries(map)) {
+      merged[key] = (merged[key] ?? 0) + duration;
+    }
+  }
+  return merged;
+}
+
+function lastNDateKeys(n: number, today = new Date()): string[] {
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(today);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (n - 1 - i));
+    return todayKey(d);
+  });
+}
+
+function mergeTaskStat(a: TaskStat | undefined, b: TaskStat | undefined): TaskStat {
+  return {
+    focusMs: (a?.focusMs ?? 0) + (b?.focusMs ?? 0),
+    distractionMs: (a?.distractionMs ?? 0) + (b?.distractionMs ?? 0),
+    activeMs: (a?.activeMs ?? 0) + (b?.activeMs ?? 0),
+    focusByWindow: mergeWindowMaps(a?.focusByWindow, b?.focusByWindow),
+    distractionByWindow: mergeWindowMaps(a?.distractionByWindow, b?.distractionByWindow),
+    activeByWindow: mergeWindowMaps(a?.activeByWindow, b?.activeByWindow)
+  };
+}
+
+function formatDayLabel(key: string): string {
+  const [, m, d] = key.split("-");
+  return `${m}/${d}`;
+}
+
 function formatHourLabel(hour: string): string {
   return `${hour}:00`;
 }
@@ -316,6 +363,314 @@ function createGoalDraft(count: number, source?: FocusGoalInput | null): FocusGo
   };
 }
 
+const TASK_TYPE_OPTIONS: { value: TaskType; labelKey: "taskTypeDeepWork" | "taskTypeMisc" | "taskTypeLeisure" }[] = [
+  { value: "deepWork", labelKey: "taskTypeDeepWork" },
+  { value: "misc", labelKey: "taskTypeMisc" },
+  { value: "leisure", labelKey: "taskTypeLeisure" }
+];
+
+function formatElapsed(ms: number, labels: SettingsCopy): string {
+  if (ms <= 0) return `0${labels.minuteUnit}`;
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function TaskSection({
+  snapshot,
+  tasks,
+  stats,
+  labels,
+  now
+}: {
+  snapshot: ReturnType<typeof useSnapshot>;
+  tasks: Task[];
+  stats: TodayStats;
+  labels: SettingsCopy;
+  now: number;
+}): JSX.Element {
+  const [newTaskName, setNewTaskName] = useState("");
+  const [newTaskType, setNewTaskType] = useState<TaskType>("deepWork");
+
+  const allTasks = [...BUILTIN_TASKS, ...tasks];
+  const { activeTaskId, taskTimerStartedAt } = snapshot;
+  const autoSwitch = snapshot.settings.autoTaskSwitchEnabled;
+
+  function taskStatLine(task: Task): JSX.Element | null {
+    const stat = stats.taskStats[task.id];
+    if (!stat) return null;
+    const parts: string[] = [];
+    if (stat.focusMs > 0) parts.push(`${labels.taskFocus} ${formatStatsDuration(stat.focusMs, labels)}`);
+    if (stat.distractionMs > 0) parts.push(`${labels.taskDistraction} ${formatStatsDuration(stat.distractionMs, labels)}`);
+    if (stat.activeMs > 0) parts.push(`${labels.taskActive} ${formatStatsDuration(stat.activeMs, labels)}`);
+    if (!parts.length) return null;
+    return <small className="task-stat-line">{parts.join(" · ")}</small>;
+  }
+
+  function taskWindowList(task: Task): JSX.Element | null {
+    const stat = stats.taskStats[task.id];
+    if (!stat) return null;
+    const entries = topEntries(
+      mergeWindowMaps(stat.activeByWindow, stat.focusByWindow, stat.distractionByWindow),
+      4
+    );
+    if (!entries.length) return null;
+    return (
+      <div className="task-window-block">
+        <small className="task-window-title">{labels.taskWindows}</small>
+        <ul className="task-window-list">
+          {entries.map(([name, duration]) => (
+            <li key={name}>
+              <span title={name}>{name}</span>
+              <strong>{formatStatsDuration(duration, labels)}</strong>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  function taskRules(task: Task): JSX.Element | null {
+    if (!autoSwitch) return null;
+    if (task.isBuiltin) {
+      if (task.type !== "leisure") return null;
+      return (
+        <div className="task-rules-block">
+          <small className="task-window-title">{labels.taskMatchRules}</small>
+          <small className="task-rules-hint">{labels.leisureAutoMatchHint}</small>
+        </div>
+      );
+    }
+    return (
+      <div className="task-rules-block">
+        <small className="task-window-title">{labels.taskMatchRules}</small>
+        <ChipsControl
+          value={task.matchRules ?? []}
+          labels={labels}
+          onChange={(rules) => window.pawpal.setTaskRules(task.id, rules)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <section className="prefs__group">
+      <h2 className="prefs__group-title">{labels.tasksSection}</h2>
+
+      <Row
+        label={labels.autoTaskSwitch}
+        hint={labels.autoTaskSwitchHint}
+        control={
+          <ToggleControl
+            checked={autoSwitch}
+            ariaLabel={labels.autoTaskSwitch}
+            onChange={(autoTaskSwitchEnabled) => window.pawpal.updateSettings({ autoTaskSwitchEnabled })}
+          />
+        }
+      />
+
+      <div className="task-list">
+        <div className="task-item task-item--none">
+          <button
+            type="button"
+            className={`task-name-btn${!activeTaskId ? " is-active" : ""}`}
+            onClick={() => window.pawpal.activateTask(null)}
+          >
+            {labels.noActiveTask}
+          </button>
+        </div>
+        {allTasks.map((task) => {
+          const isActive = activeTaskId === task.id;
+          const liveMs = isActive && taskTimerStartedAt !== null ? now - taskTimerStartedAt : null;
+          return (
+            <div key={task.id} className={`task-item${isActive ? " is-active" : ""}`}>
+              <button
+                type="button"
+                className={`task-name-btn${isActive ? " is-active" : ""}`}
+                onClick={() => window.pawpal.activateTask(isActive ? null : task.id)}
+              >
+                <span className="task-item__name">{task.name}</span>
+                <span className="task-item__type">
+                  {labels[TASK_TYPE_OPTIONS.find((o) => o.value === task.type)?.labelKey ?? "taskTypeDeepWork"]}
+                </span>
+                {isActive && liveMs !== null ? (
+                  <span className="task-item__timer">{formatElapsed(liveMs, labels)}</span>
+                ) : null}
+              </button>
+              {taskStatLine(task)}
+              {taskWindowList(task)}
+              {taskRules(task)}
+              {!task.isBuiltin ? (
+                <button
+                  type="button"
+                  className="task-remove-btn"
+                  aria-label={`Remove ${task.name}`}
+                  onClick={() => window.pawpal.removeTask(task.id)}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="task-add-row">
+        <input
+          className="task-name-input"
+          placeholder={labels.taskNamePlaceholder}
+          value={newTaskName}
+          onChange={(e) => setNewTaskName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && newTaskName.trim()) {
+              window.pawpal.addTask(newTaskName.trim(), newTaskType);
+              setNewTaskName("");
+            }
+          }}
+        />
+        <select
+          className="task-type-select"
+          value={newTaskType}
+          onChange={(e) => setNewTaskType(e.target.value as TaskType)}
+        >
+          {TASK_TYPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {labels[opt.labelKey]}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="pref-button"
+          disabled={!newTaskName.trim()}
+          onClick={() => {
+            if (!newTaskName.trim()) return;
+            window.pawpal.addTask(newTaskName.trim(), newTaskType);
+            setNewTaskName("");
+          }}
+        >
+          {labels.addTask}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function HistorySection({
+  statsHistory,
+  todayStats,
+  tasks,
+  labels
+}: {
+  statsHistory: StatsHistory;
+  todayStats: TodayStats;
+  tasks: Task[];
+  labels: SettingsCopy;
+}): JSX.Element {
+  const [range, setRange] = useState<7 | 30>(7);
+  const [exportMsg, setExportMsg] = useState("");
+  const merged = useMemo(
+    () => ({ ...statsHistory, [todayStats.date]: todayStats }),
+    [statsHistory, todayStats]
+  );
+  const dateKeys = useMemo(() => lastNDateKeys(range), [range]);
+  const days = useMemo(() => dateKeys.map((key) => merged[key]), [dateKeys, merged]);
+  const maxDay = Math.max(1, ...days.map((d) => (d?.focusMs ?? 0) + (d?.distractionMs ?? 0)));
+  const totalFocus = days.reduce((sum, d) => sum + (d?.focusMs ?? 0), 0);
+  const totalDistraction = days.reduce((sum, d) => sum + (d?.distractionMs ?? 0), 0);
+  const hasData = totalFocus + totalDistraction > 0;
+
+  const taskTotals = useMemo<Array<[string, number]>>(() => {
+    return [...BUILTIN_TASKS, ...tasks]
+      .map((task): [string, number] => {
+        const total = days.reduce(
+          (acc, d) => mergeTaskStat(acc, d?.taskStats?.[task.id]),
+          createEmptyTaskStat()
+        );
+        return [task.name, total.focusMs + total.activeMs];
+      })
+      .filter(([, ms]) => ms > 0)
+      .sort((a, b) => b[1] - a[1]);
+  }, [days, tasks]);
+
+  return (
+    <section className="prefs__analytics" aria-label={labels.historySection}>
+      <div className="prefs__group-head">
+        <h3 className="stats-panel__title">{labels.historySection}</h3>
+        <div className="range-toggle">
+          <button type="button" className={range === 7 ? "is-active" : ""} onClick={() => setRange(7)}>
+            {labels.range7}
+          </button>
+          <button type="button" className={range === 30 ? "is-active" : ""} onClick={() => setRange(30)}>
+            {labels.range30}
+          </button>
+          <button
+            type="button"
+            className="range-toggle__export"
+            onClick={async () => {
+              const result = await window.pawpal.exportWorklog();
+              if (result.canceled) return;
+              setExportMsg(result.ok && result.path ? labels.exportDone(result.path) : labels.exportFailed);
+            }}
+          >
+            {labels.exportWorklog}
+          </button>
+        </div>
+      </div>
+      {exportMsg ? <p className="export-msg">{exportMsg}</p> : null}
+
+      <div className="analytics-summary">
+        <div>
+          <span>{labels.focusTime}</span>
+          <strong>{formatStatsDuration(totalFocus, labels)}</strong>
+        </div>
+        <div>
+          <span>{labels.distractionTime}</span>
+          <strong>{formatStatsDuration(totalDistraction, labels)}</strong>
+        </div>
+      </div>
+
+      {hasData ? (
+        <>
+          <div className="stats-panel stats-panel--wide">
+            <div className="hour-bars day-bars">
+              {dateKeys.map((key, index) => {
+                const day = days[index];
+                const focus = day?.focusMs ?? 0;
+                const distraction = day?.distractionMs ?? 0;
+                const total = focus + distraction;
+                return (
+                  <div
+                    className="hour-bar"
+                    key={key}
+                    title={`${formatDayLabel(key)} ${formatStatsDuration(total, labels)}`}
+                  >
+                    <span>{formatDayLabel(key)}</span>
+                    <div className="hour-bar__track">
+                      <i className="hour-bar__focus" style={{ width: `${(focus / maxDay) * 100}%` }} />
+                      <i
+                        className="hour-bar__distraction"
+                        style={{ width: `${(distraction / maxDay) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <StatsList title={labels.weeklyTaskTotals} entries={taskTotals} labels={labels} />
+        </>
+      ) : (
+        <p className="stats-empty">{labels.noStatsYet}</p>
+      )}
+    </section>
+  );
+}
+
 function currentGoalText(snapshot: ReturnType<typeof useSnapshot>): string | null {
   const session = snapshot.goalSession;
   if (!session) return null;
@@ -387,7 +742,7 @@ export function SettingsView(): JSX.Element {
 
   function startWithGoals(): void {
     const next = createGoalDraft(draft.focusPomodoroCount, goalDraft);
-    if (!next.bigGoalTitle.trim() || !next.smallGoalTitles[0]?.trim()) {
+    if (!next.bigGoalTitle.trim()) {
       setGoalError(labels.goalRequired);
       return;
     }
@@ -420,6 +775,13 @@ export function SettingsView(): JSX.Element {
       </section>
 
       <StatsOverview stats={stats} labels={labels} />
+
+      <HistorySection
+        statsHistory={snapshot.statsHistory}
+        todayStats={stats}
+        tasks={snapshot.settings.tasks}
+        labels={labels}
+      />
 
       {!draft.onboardingDismissed ? (
         <aside className="prefs__welcome">
@@ -700,6 +1062,14 @@ export function SettingsView(): JSX.Element {
           )}
         </div>
       </section>
+
+      <TaskSection
+        snapshot={snapshot}
+        tasks={draft.tasks}
+        stats={stats}
+        labels={labels}
+        now={now}
+      />
 
       {!window.pawpal.isPackaged && (
         <section className="prefs__group">
