@@ -7,6 +7,7 @@ import type {
   DemoTrigger,
   FocusGoalInput,
   PetAppearanceId,
+  Schedule,
   Settings,
   StatsHistory,
   Task,
@@ -245,6 +246,76 @@ function lastNDateKeys(n: number, today = new Date()): string[] {
   });
 }
 
+// Monday is the first day of the week (matches zh-CN locale convention).
+function startOfWeek(date: Date): Date {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay(); // 0 = Sunday
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return d;
+}
+
+// Local "YYYY-MM-DD" key for a date (alias for the shared todayKey helper).
+function toYearMonthDay(date: Date): string {
+  return todayKey(date);
+}
+
+function startOfMonth(date: Date): Date {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(1);
+  return d;
+}
+
+function addDays(date: Date, days: number): Date {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function rangeDateKeys(start: Date, end: Date): string[] {
+  const keys: string[] = [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+  const stop = new Date(end);
+  stop.setHours(0, 0, 0, 0);
+  while (cursor.getTime() <= stop.getTime()) {
+    keys.push(todayKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return keys;
+}
+
+type StatsDimension = "today" | "yesterday" | "thisWeek" | "thisMonth" | "last7" | "last30";
+
+function dimensionDateKeys(dimension: StatsDimension, now = new Date()): string[] {
+  switch (dimension) {
+    case "today":
+      return lastNDateKeys(1, now);
+    case "yesterday":
+      return rangeDateKeys(addDays(now, -1), addDays(now, -1));
+    case "thisWeek": {
+      const start = startOfWeek(now);
+      return rangeDateKeys(start, now);
+    }
+    case "thisMonth": {
+      const start = startOfMonth(now);
+      return rangeDateKeys(start, now);
+    }
+    case "last7":
+      return lastNDateKeys(7, now);
+    case "last30":
+      return lastNDateKeys(30, now);
+    default:
+      return lastNDateKeys(7, now);
+  }
+}
+
+function isSingleDayDimension(dimension: StatsDimension): boolean {
+  return dimension === "today" || dimension === "yesterday";
+}
+
 function mergeTaskStat(a: TaskStat | undefined, b: TaskStat | undefined): TaskStat {
   return {
     focusMs: (a?.focusMs ?? 0) + (b?.focusMs ?? 0),
@@ -351,6 +422,117 @@ function StatsOverview({ stats, labels }: { stats: TodayStats; labels: SettingsC
         <StatsList title={labels.topFocusWindows} entries={topEntries(stats.focusByWindow)} labels={labels} />
         <StatsList title={labels.topDistractionWindows} entries={topEntries(stats.distractionByWindow)} labels={labels} />
         <StatsList title={labels.topHours} entries={topHours} labels={labels} />
+      </div>
+    </section>
+  );
+}
+
+type ActivityCompositionRow = {
+  id: string;
+  name: string;
+  totalMs: number;
+  focusMs: number;
+  activeMs: number;
+  distractionMs: number;
+};
+
+const ACTIVITY_COLORS = ["#4f9d83", "#b67d3a", "#5278a8", "#c65f46", "#7d6da8", "#879761"];
+
+function activityStatTotal(stat: TaskStat): number {
+  return Math.max(stat.activeMs, stat.focusMs + stat.distractionMs);
+}
+
+function ActivityComposition({
+  stats,
+  tasks,
+  labels
+}: {
+  stats: TodayStats;
+  tasks: Task[];
+  labels: SettingsCopy;
+}): JSX.Element {
+  const allTasks = useMemo(() => [...BUILTIN_TASKS, ...tasks], [tasks]);
+  const rows = useMemo<ActivityCompositionRow[]>(() => {
+    const taskRows = allTasks
+      .map((task): ActivityCompositionRow | null => {
+        const stat = stats.taskStats[task.id];
+        if (!stat) return null;
+        const totalMs = activityStatTotal(stat);
+        if (totalMs <= 0) return null;
+        return {
+          id: task.id,
+          name: task.name,
+          totalMs,
+          focusMs: stat.focusMs,
+          activeMs: stat.activeMs,
+          distractionMs: stat.distractionMs
+        };
+      })
+      .filter((row): row is ActivityCompositionRow => Boolean(row));
+
+    const assignedFocusMs = taskRows.reduce((sum, row) => sum + row.focusMs, 0);
+    const assignedDistractionMs = taskRows.reduce((sum, row) => sum + row.distractionMs, 0);
+    const unassignedFocusMs = Math.max(0, stats.focusMs - assignedFocusMs);
+    const unassignedDistractionMs = Math.max(0, stats.distractionMs - assignedDistractionMs);
+    if (unassignedFocusMs > 0 || unassignedDistractionMs > 0) {
+      taskRows.push({
+        id: "__unassigned__",
+        name: labels.unassignedActivity,
+        totalMs: unassignedFocusMs + unassignedDistractionMs,
+        focusMs: unassignedFocusMs,
+        activeMs: 0,
+        distractionMs: unassignedDistractionMs
+      });
+    }
+
+    return taskRows.sort((left, right) => right.totalMs - left.totalMs);
+  }, [allTasks, labels.unassignedActivity, stats]);
+
+  const totalMs = rows.reduce((sum, row) => sum + row.totalMs, 0);
+
+  return (
+    <section className="prefs__analytics" aria-label={labels.activityComposition}>
+      <div className="stats-panel stats-panel--wide activity-composition">
+        <div className="stats-panel__head">
+          <h3 className="stats-panel__title">{labels.activityComposition}</h3>
+          <span>{formatStatsDuration(totalMs, labels)}</span>
+        </div>
+        {rows.length ? (
+          <div className="activity-composition__list">
+            {rows.map((row, index) => {
+              const share = totalMs > 0 ? (row.totalMs / totalMs) * 100 : 0;
+              const details = [
+                row.focusMs > 0 ? `${labels.taskFocus} ${formatStatsDuration(row.focusMs, labels)}` : null,
+                row.activeMs > 0 ? `${labels.taskActive} ${formatStatsDuration(row.activeMs, labels)}` : null,
+                row.distractionMs > 0
+                  ? `${labels.taskDistraction} ${formatStatsDuration(row.distractionMs, labels)}`
+                  : null
+              ].filter(Boolean);
+              return (
+                <div className="activity-row" key={row.id}>
+                  <div className="activity-row__head">
+                    <span title={row.name}>{row.name}</span>
+                    <strong>
+                      {formatStatsDuration(row.totalMs, labels)}
+                      <small>{Math.round(share)}%</small>
+                    </strong>
+                  </div>
+                  <div className="activity-row__bar" aria-hidden="true">
+                    <i
+                      style={{
+                        width: `${share}%`,
+                        backgroundColor: ACTIVITY_COLORS[index % ACTIVITY_COLORS.length]
+                      }}
+                    />
+                  </div>
+                  {details.length ? <small className="activity-row__detail">{details.join(" / ")}</small> : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="stats-empty">{labels.noStatsYet}</p>
+        )}
       </div>
     </section>
   );
@@ -560,6 +742,284 @@ function TaskSection({
   );
 }
 
+function ScheduleSection({
+  schedules,
+  tasks,
+  labels
+}: {
+  schedules: Schedule[];
+  tasks: Task[];
+  labels: SettingsCopy;
+}): JSX.Element {
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftTime, setDraftTime] = useState("09:00");
+  const [draftTaskId, setDraftTaskId] = useState<string>("");
+  const [view, setView] = useState<"list" | "calendar">("list");
+  const [cursor, setCursor] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
+
+  const taskOptions = [
+    { value: "", label: labels.taskTypeMisc },
+    ...[...BUILTIN_TASKS, ...tasks]
+      .filter((t) => t.id !== "__leisure__")
+      .map((t) => ({ value: t.id, label: t.name }))
+  ];
+
+  function toggleDay(days: number[], day: number): number[] {
+    return days.includes(day) ? days.filter((d) => d !== day) : [...days, day].sort();
+  }
+
+  // 42-cell grid (6 weeks) starting from the Sunday of the first week of the cursor month.
+  const today = new Date();
+  const todayKey = toYearMonthDay(today);
+  const calendarDays = useMemo(() => {
+    const firstOfMonth = new Date(cursor.year, cursor.month, 1);
+    const startOffset = firstOfMonth.getDay(); // 0 = Sunday
+    const start = new Date(cursor.year, cursor.month, 1 - startOffset);
+    const cells: Array<{ date: Date; key: string; inMonth: boolean }> = [];
+    for (let i = 0; i < 42; i += 1) {
+      const date = new Date(start);
+      date.setDate(start.getDate() + i);
+      cells.push({
+        date,
+        key: toYearMonthDay(date),
+        inMonth: date.getMonth() === cursor.month
+      });
+    }
+    return cells;
+  }, [cursor]);
+
+  const schedulesForCell = useMemo(() => {
+    const map = new Map<string, Schedule[]>();
+    for (const cell of calendarDays) {
+      const dow = cell.date.getDay();
+      const hits = schedules
+        .filter((s) => s.enabled)
+        .filter((s) => s.daysOfWeek.length === 0 || s.daysOfWeek.includes(dow))
+        .sort((a, b) => a.time.localeCompare(b.time));
+      map.set(cell.key, hits);
+    }
+    return map;
+  }, [calendarDays, schedules]);
+
+  const monthHasSchedules = Array.from(schedulesForCell.values()).some((list) => list.length > 0);
+
+  function addMonths(delta: number): void {
+    setCursor((current) => {
+      const d = new Date(current.year, current.month + delta, 1);
+      return { year: d.getFullYear(), month: d.getMonth() };
+    });
+  }
+
+  return (
+    <section className="prefs__group">
+      <h2 className="prefs__group-title">{labels.schedulesSection}</h2>
+      <p className="prefs__hint">{labels.scheduleHint}</p>
+
+      <div className="schedule-view-toggle">
+        <button
+          type="button"
+          className={view === "list" ? "is-active" : ""}
+          onClick={() => setView("list")}
+        >
+          {labels.scheduleViewList}
+        </button>
+        <button
+          type="button"
+          className={view === "calendar" ? "is-active" : ""}
+          onClick={() => setView("calendar")}
+        >
+          {labels.scheduleViewCalendar}
+        </button>
+      </div>
+
+      {view === "list" ? (
+        <>
+          {schedules.length ? (
+            <div className="schedule-list">
+              {schedules.map((schedule) => (
+                <div key={schedule.id} className={`schedule-item${schedule.enabled ? "" : " is-disabled"}`}>
+                  <div className="schedule-item__row">
+                    <input
+                      className="schedule-item__title"
+                      type="text"
+                      value={schedule.title}
+                      placeholder={labels.scheduleTitle}
+                      onChange={(e) =>
+                        window.pawpal.updateSchedule(schedule.id, { title: e.target.value })
+                      }
+                    />
+                    <input
+                      className="schedule-item__time"
+                      type="time"
+                      value={schedule.time}
+                      onChange={(e) =>
+                        window.pawpal.updateSchedule(schedule.id, { time: e.target.value })
+                      }
+                    />
+                    <select
+                      className="schedule-item__task"
+                      value={schedule.taskId ?? ""}
+                      onChange={(e) =>
+                        window.pawpal.updateSchedule(schedule.id, { taskId: e.target.value || null })
+                      }
+                    >
+                      {taskOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className={`schedule-item__toggle${schedule.enabled ? " is-active" : ""}`}
+                      aria-label={labels.scheduleEnabled}
+                      onClick={() =>
+                        window.pawpal.updateSchedule(schedule.id, { enabled: !schedule.enabled })
+                      }
+                    >
+                      {schedule.enabled ? "●" : "○"}
+                    </button>
+                    <button
+                      type="button"
+                      className="schedule-item__delete"
+                      aria-label={labels.scheduleDelete}
+                      onClick={() => window.pawpal.removeSchedule(schedule.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="schedule-item__days">
+                    {labels.dayLabels.map((label, day) => (
+                      <button
+                        type="button"
+                        key={day}
+                        className={`schedule-day${
+                          schedule.daysOfWeek.length === 0 || schedule.daysOfWeek.includes(day)
+                            ? " is-active"
+                            : ""
+                        }`}
+                        onClick={() =>
+                          window.pawpal.updateSchedule(schedule.id, {
+                            daysOfWeek: toggleDay(schedule.daysOfWeek, day)
+                          })
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    <small className="schedule-item__repeat-hint">
+                      {schedule.daysOfWeek.length === 0 ? labels.scheduleEveryDay : null}
+                    </small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="schedule-add-row">
+            <input
+              className="schedule-name-input"
+              type="text"
+              placeholder={labels.scheduleTitle}
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addSchedule();
+              }}
+            />
+            <input
+              className="schedule-time-input"
+              type="time"
+              value={draftTime}
+              onChange={(e) => setDraftTime(e.target.value)}
+            />
+            <select
+              className="schedule-task-select"
+              value={draftTaskId}
+              onChange={(e) => setDraftTaskId(e.target.value)}
+            >
+              {taskOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="pref-button"
+              onClick={() => addSchedule()}
+            >
+              {labels.scheduleAdd}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="calendar-nav">
+            <button type="button" aria-label={labels.schedulePrevMonth} onClick={() => addMonths(-1)}>
+              ‹
+            </button>
+            <strong>{labels.monthNames[cursor.month]} {cursor.year}</strong>
+            <button type="button" aria-label={labels.scheduleNextMonth} onClick={() => addMonths(1)}>
+              ›
+            </button>
+            <button
+              type="button"
+              className="calendar-nav__today"
+              onClick={() => setCursor({ year: today.getFullYear(), month: today.getMonth() })}
+            >
+              {labels.scheduleToday}
+            </button>
+          </div>
+          <div className="calendar-grid">
+            {labels.dayLabels.map((label) => (
+              <div className="calendar-cell calendar-cell--head" key={label}>
+                {label}
+              </div>
+            ))}
+            {calendarDays.map((cell) => {
+              const hits = schedulesForCell.get(cell.key) ?? [];
+              const isToday = cell.key === todayKey;
+              return (
+                <div
+                  key={cell.key}
+                  className={`calendar-cell${cell.inMonth ? "" : " is-outside"}${isToday ? " is-today" : ""}`}
+                >
+                  <span className="calendar-cell__date">{cell.date.getDate()}</span>
+                  {hits.slice(0, 3).map((s) => (
+                    <div className="calendar-cell__event" key={s.id} title={`${s.time} ${s.title}`}>
+                      <small>{s.time}</small> {s.title}
+                    </div>
+                  ))}
+                  {hits.length > 3 ? (
+                    <small className="calendar-cell__more">+{hits.length - 3}</small>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+          {!monthHasSchedules ? (
+            <p className="stats-empty">{labels.scheduleCalendarEmpty}</p>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+
+  function addSchedule(): void {
+    window.pawpal.addSchedule({
+      title: draftTitle.trim() || labels.untitledSchedule,
+      time: draftTime,
+      taskId: draftTaskId || null,
+      daysOfWeek: []
+    });
+    setDraftTitle("");
+  }
+}
+
 function HistorySection({
   statsHistory,
   todayStats,
@@ -571,18 +1031,37 @@ function HistorySection({
   tasks: Task[];
   labels: SettingsCopy;
 }): JSX.Element {
-  const [range, setRange] = useState<7 | 30>(7);
+  const [dimension, setDimension] = useState<StatsDimension>("today");
   const [exportMsg, setExportMsg] = useState("");
   const merged = useMemo(
     () => ({ ...statsHistory, [todayStats.date]: todayStats }),
     [statsHistory, todayStats]
   );
-  const dateKeys = useMemo(() => lastNDateKeys(range), [range]);
+  const dateKeys = useMemo(() => dimensionDateKeys(dimension), [dimension]);
   const days = useMemo(() => dateKeys.map((key) => merged[key]), [dateKeys, merged]);
-  const maxDay = Math.max(1, ...days.map((d) => (d?.focusMs ?? 0) + (d?.distractionMs ?? 0)));
+  const singleDay = isSingleDayDimension(dimension);
   const totalFocus = days.reduce((sum, d) => sum + (d?.focusMs ?? 0), 0);
   const totalDistraction = days.reduce((sum, d) => sum + (d?.distractionMs ?? 0), 0);
   const hasData = totalFocus + totalDistraction > 0;
+
+  // Merged hourly distribution across the selected days (used for single-day view).
+  const hourly = useMemo(() => {
+    const hours = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
+    const focusByHour: Record<string, number> = {};
+    const distractionByHour: Record<string, number> = {};
+    for (const hour of hours) {
+      focusByHour[hour] = days.reduce((sum, d) => sum + (d?.focusByHour[hour] ?? 0), 0);
+      distractionByHour[hour] = days.reduce((sum, d) => sum + (d?.distractionByHour[hour] ?? 0), 0);
+    }
+    const maxHour = Math.max(
+      1,
+      ...hours.map((hour) => focusByHour[hour] + distractionByHour[hour])
+    );
+    return { hours, focusByHour, distractionByHour, maxHour };
+  }, [days]);
+
+  // Multi-day per-day totals (used for non-single-day views).
+  const maxDay = Math.max(1, ...days.map((d) => (d?.focusMs ?? 0) + (d?.distractionMs ?? 0)));
 
   const taskTotals = useMemo<Array<[string, number]>>(() => {
     return [...BUILTIN_TASKS, ...tasks]
@@ -597,17 +1076,30 @@ function HistorySection({
       .sort((a, b) => b[1] - a[1]);
   }, [days, tasks]);
 
+  const dimensionButtons: Array<{ id: StatsDimension; label: string }> = [
+    { id: "today", label: labels.dimensionToday },
+    { id: "yesterday", label: labels.dimensionYesterday },
+    { id: "thisWeek", label: labels.dimensionThisWeek },
+    { id: "thisMonth", label: labels.dimensionThisMonth },
+    { id: "last7", label: labels.dimensionLast7 },
+    { id: "last30", label: labels.dimensionLast30 }
+  ];
+
   return (
     <section className="prefs__analytics" aria-label={labels.historySection}>
       <div className="prefs__group-head">
         <h3 className="stats-panel__title">{labels.historySection}</h3>
         <div className="range-toggle">
-          <button type="button" className={range === 7 ? "is-active" : ""} onClick={() => setRange(7)}>
-            {labels.range7}
-          </button>
-          <button type="button" className={range === 30 ? "is-active" : ""} onClick={() => setRange(30)}>
-            {labels.range30}
-          </button>
+          {dimensionButtons.map((btn) => (
+            <button
+              type="button"
+              key={btn.id}
+              className={dimension === btn.id ? "is-active" : ""}
+              onClick={() => setDimension(btn.id)}
+            >
+              {btn.label}
+            </button>
+          ))}
           <button
             type="button"
             className="range-toggle__export"
@@ -637,30 +1129,65 @@ function HistorySection({
       {hasData ? (
         <>
           <div className="stats-panel stats-panel--wide">
-            <div className="hour-bars day-bars">
-              {dateKeys.map((key, index) => {
-                const day = days[index];
-                const focus = day?.focusMs ?? 0;
-                const distraction = day?.distractionMs ?? 0;
-                const total = focus + distraction;
-                return (
-                  <div
-                    className="hour-bar"
-                    key={key}
-                    title={`${formatDayLabel(key)} ${formatStatsDuration(total, labels)}`}
-                  >
-                    <span>{formatDayLabel(key)}</span>
-                    <div className="hour-bar__track">
-                      <i className="hour-bar__focus" style={{ width: `${(focus / maxDay) * 100}%` }} />
-                      <i
-                        className="hour-bar__distraction"
-                        style={{ width: `${(distraction / maxDay) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="stats-panel__head">
+              <h3 className="stats-panel__title">
+                {singleDay ? labels.hourlyChartTitle : labels.focusDistribution}
+              </h3>
+              <span>{labels.distractionDistribution}</span>
             </div>
+            {singleDay ? (
+              <div className="hour-bars">
+                {hourly.hours.map((hour) => {
+                  const focus = hourly.focusByHour[hour];
+                  const distraction = hourly.distractionByHour[hour];
+                  const total = focus + distraction;
+                  return (
+                    <div
+                      className="hour-bar"
+                      key={hour}
+                      title={`${formatHourLabel(hour)} ${formatStatsDuration(total, labels)}`}
+                    >
+                      <span>{formatHourLabel(hour)}</span>
+                      <div className="hour-bar__track">
+                        <i
+                          className="hour-bar__focus"
+                          style={{ width: `${(focus / hourly.maxHour) * 100}%` }}
+                        />
+                        <i
+                          className="hour-bar__distraction"
+                          style={{ width: `${(distraction / hourly.maxHour) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="hour-bars day-bars">
+                {dateKeys.map((key, index) => {
+                  const day = days[index];
+                  const focus = day?.focusMs ?? 0;
+                  const distraction = day?.distractionMs ?? 0;
+                  const total = focus + distraction;
+                  return (
+                    <div
+                      className="hour-bar"
+                      key={key}
+                      title={`${formatDayLabel(key)} ${formatStatsDuration(total, labels)}`}
+                    >
+                      <span>{formatDayLabel(key)}</span>
+                      <div className="hour-bar__track">
+                        <i className="hour-bar__focus" style={{ width: `${(focus / maxDay) * 100}%` }} />
+                        <i
+                          className="hour-bar__distraction"
+                          style={{ width: `${(distraction / maxDay) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <StatsList title={labels.weeklyTaskTotals} entries={taskTotals} labels={labels} />
         </>
@@ -774,6 +1301,12 @@ export function SettingsView(): JSX.Element {
         <StatCard label={labels.warnings} value={stats.focusWarnings} unit={labels.countUnit} />
       </section>
 
+      <ActivityComposition
+        stats={stats}
+        tasks={snapshot.settings.tasks}
+        labels={labels}
+      />
+
       <StatsOverview stats={stats} labels={labels} />
 
       <HistorySection
@@ -871,6 +1404,29 @@ export function SettingsView(): JSX.Element {
               max={240}
               unit={labels.minuteUnit}
               onChange={(hydrationIntervalMinutes) => updateDraft({ hydrationIntervalMinutes })}
+            />
+          }
+        />
+        <Row
+          label={labels.enableFocusReminder}
+          hint={labels.focusReminderHint}
+          control={
+            <ToggleControl
+              checked={draft.focusReminderEnabled}
+              onChange={(focusReminderEnabled) => updateDraft({ focusReminderEnabled })}
+              ariaLabel={labels.enableFocusReminder}
+            />
+          }
+        />
+        <Row
+          label={labels.focusReminderInterval}
+          control={
+            <NumberControl
+              value={draft.focusReminderIntervalMinutes}
+              min={1}
+              max={180}
+              unit={labels.minuteUnit}
+              onChange={(focusReminderIntervalMinutes) => updateDraft({ focusReminderIntervalMinutes })}
             />
           }
         />
@@ -1071,6 +1627,12 @@ export function SettingsView(): JSX.Element {
         now={now}
       />
 
+      <ScheduleSection
+        schedules={snapshot.schedules}
+        tasks={draft.tasks}
+        labels={labels}
+      />
+
       {!window.pawpal.isPackaged && (
         <section className="prefs__group">
           <h2 className="prefs__group-title">{labels.testTools}</h2>
@@ -1078,6 +1640,7 @@ export function SettingsView(): JSX.Element {
             <DemoChip trigger="break" label={labels.demoBreak} />
             <DemoChip trigger="hydration" label={labels.demoWater} />
             <DemoChip trigger="focusWarning" label={labels.demoFocusWarning} />
+            <DemoChip trigger="focusReminder" label={labels.demoFocusReminder} />
             <DemoChip trigger="happy" label={labels.demoHappy} />
             <button type="button" className="pref-chip-button" onClick={window.pawpal.resetToday}>
               {labels.resetToday}

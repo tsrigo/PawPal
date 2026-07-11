@@ -23,6 +23,7 @@ import type {
   FocusPhase,
   PetFacing,
   PetState,
+  Schedule,
   Settings,
   StatsHistory,
   SpeechBubble,
@@ -67,6 +68,7 @@ type StoreSchema = {
   goalDraft?: FocusGoalInput | null;
   goalSession?: FocusGoalSession | null;
   petPosition?: PetPosition;
+  schedules: Schedule[];
 };
 
 app.setName(APP_NAME);
@@ -78,7 +80,8 @@ const store = new Store<StoreSchema>({
     stats: createEmptyStats(),
     statsHistory: {},
     goalDraft: null,
-    goalSession: null
+    goalSession: null,
+    schedules: []
   }
 });
 
@@ -97,11 +100,13 @@ let breakRunCountdownTimer: NodeJS.Timeout | null = null;
 let breakRunMovementTimer: NodeJS.Timeout | null = null;
 let breakTimer: NodeJS.Timeout | null = null;
 let hydrationTimer: NodeJS.Timeout | null = null;
+let focusReminderTimer: NodeJS.Timeout | null = null;
 let focusTimer: NodeJS.Timeout | null = null;
 let distractionTimer: NodeJS.Timeout | null = null;
 let distractionStartupTimer: NodeJS.Timeout | null = null;
 let breakDueAt: number | null = null;
 let hydrationDueAt: number | null = null;
+let focusReminderDueAt: number | null = null;
 let focusEndsAt: number | null = null;
 let focusRemainingMs: number | null = null;
 let focusSegmentStartedAt: number | null = null;
@@ -116,6 +121,9 @@ let nextBreakRunTurnAt = 0;
 let breakMutedToday = false;
 let dragOffset: PetPosition = { x: 0, y: 0 };
 let focusGoalInputOpen = false;
+let focusGoalInlineOpen = false;
+let focusGoalInlineTimer: NodeJS.Timeout | null = null;
+let focusGoalInlineDeadlineAt: number | null = null;
 const TASK_WINDOW_SAMPLE_INTERVAL_MS = 15_000;
 const AUTO_SWITCH_PIN_MS = 300_000;
 let activeTaskId: string | null = null;
@@ -127,6 +135,9 @@ let autoSwitchSuppressedUntil = 0;
 let autoSwitchTimer: NodeJS.Timeout | null = null;
 let leisureEndsAt: number | null = null;
 let leisureTimer: NodeJS.Timeout | null = null;
+let scheduleCheckTimer: NodeJS.Timeout | null = null;
+const SCHEDULE_CHECK_INTERVAL_MS = 30_000;
+let triggeredScheduleId: string | null = null;
 let distractionStatus: DistractionStatus = {
   state: "idle",
   activeApp: "",
@@ -691,6 +702,7 @@ function snapshot(): AppSnapshot {
     timers: {
       breakDueAt,
       hydrationDueAt,
+      focusReminderDueAt,
       focusEndsAt,
       focusRemainingMs,
       distractionStartedAt
@@ -706,9 +718,12 @@ function snapshot(): AppSnapshot {
     goalSession: getGoalSession(),
     goalDraft: getGoalDraft(),
     focusGoalInputOpen,
+    focusGoalInlineOpen,
+    focusGoalInlineDeadlineAt,
     activeTaskId,
     taskTimerStartedAt: activeTaskId ? taskTimerStartedAt : null,
-    leisureEndsAt
+    leisureEndsAt,
+    schedules: store.get("schedules")
   };
 }
 
@@ -871,7 +886,10 @@ function createPetWindow(): void {
 
 function ensurePetWindowVisible(): void {
   if (!petWindow || petWindow.isDestroyed()) createPetWindow();
-  if (petWindow && !petWindow.isVisible()) petWindow.showInactive();
+  if (petWindow && !petWindow.isVisible()) {
+    petWindow.showInactive();
+    petWindow.setAlwaysOnTop(true, "floating");
+  }
   updateTrayMenu();
   publishSnapshot();
 }
@@ -914,11 +932,51 @@ function createSettingsWindow(): void {
   });
 }
 
+const INLINE_GOAL_AUTO_SKIP_MS = 10_000;
+
+function clearFocusGoalInlineState(): void {
+  if (focusGoalInlineTimer) {
+    clearTimeout(focusGoalInlineTimer);
+    focusGoalInlineTimer = null;
+  }
+  focusGoalInlineOpen = false;
+  focusGoalInlineDeadlineAt = null;
+}
+
 function requestFocusGoalInput(): void {
   if (focusActive || blockingMode) return;
-  focusGoalInputOpen = true;
-  createSettingsWindow();
+  ensurePetWindowVisible();
+  clearFocusGoalInlineState();
+  focusGoalInlineOpen = true;
+  focusGoalInlineDeadlineAt = Date.now() + INLINE_GOAL_AUTO_SKIP_MS;
+  focusGoalInlineTimer = setTimeout(() => {
+    // Auto-skip: start focus without a goal after 10s of no input.
+    focusGoalInlineOpen = false;
+    focusGoalInlineDeadlineAt = null;
+    focusGoalInlineTimer = null;
+    publishSnapshot();
+    startFocusMode();
+  }, INLINE_GOAL_AUTO_SKIP_MS);
   publishSnapshot();
+}
+
+function submitInlineGoal(title: string): void {
+  if (!focusGoalInlineOpen) return;
+  clearFocusGoalInlineState();
+  publishSnapshot();
+  const trimmed = title.trim();
+  if (trimmed) {
+    startFocusMode({ bigGoalTitle: trimmed, smallGoalTitles: [] });
+  } else {
+    startFocusMode();
+  }
+}
+
+function skipInlineGoal(): void {
+  if (!focusGoalInlineOpen) return;
+  clearFocusGoalInlineState();
+  publishSnapshot();
+  startFocusMode();
 }
 
 function beginFocusEntry(): void {
@@ -949,7 +1007,10 @@ function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
         if (!petWindow) createPetWindow();
         if (!petWindow) return;
         if (petWindow.isVisible()) petWindow.hide();
-        else petWindow.showInactive();
+        else {
+          petWindow.showInactive();
+          petWindow.setAlwaysOnTop(true, "floating");
+        }
         updateTrayMenu();
         sendToAll("app:snapshot", snapshot());
       }
@@ -1237,6 +1298,7 @@ function scheduleReminderTimers(): void {
     );
   }
   publishSnapshot();
+  scheduleFocusReminder();
 }
 
 function setDistractionStatus(partial: Partial<DistractionStatus>): void {
@@ -1388,6 +1450,136 @@ function triggerHydrationReminder(fromDemo: boolean): void {
       { id: "hydration:snooze", label: labels.actions.hydrationSnooze }
     ]
   });
+}
+
+function scheduleFocusReminder(): void {
+  if (focusReminderTimer) {
+    clearTimeout(focusReminderTimer);
+    focusReminderTimer = null;
+  }
+  focusReminderDueAt = null;
+  const settings = getSettings();
+  if (!settings.focusReminderEnabled || focusActive || blockingMode) return;
+  const ms = settings.focusReminderIntervalMinutes * 60 * 1000;
+  focusReminderDueAt = Date.now() + ms;
+  focusReminderTimer = setTimeout(() => triggerFocusReminder(false), ms);
+  publishSnapshot();
+}
+
+function triggerFocusReminder(fromDemo: boolean): void {
+  focusReminderTimer = null;
+  focusReminderDueAt = null;
+  if (blockingMode || (!fromDemo && focusActive)) {
+    scheduleFocusReminder();
+    return;
+  }
+  ensurePetWindowVisible();
+  const settings = getSettings();
+  const labels = text();
+  // Gentle, non-blocking reminder: does not set blockingMode so it won't trap the user.
+  publishSnapshot();
+  showBubble({
+    id: "focus-reminder",
+    message: labels.bubble.focusReminder(settings.focusReminderIntervalMinutes),
+    actions: [
+      { id: "focus:reminder-start", label: labels.actions.focusReminderStart, kind: "primary" },
+      { id: "focus:reminder-snooze", label: labels.actions.focusReminderSnooze }
+    ],
+    autoDismissMs: 20_000
+  });
+}
+
+// --- Schedules ---
+
+function generateId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function addSchedule(data: { title: string; time: string; taskId: string | null; daysOfWeek: number[] }): Schedule {
+  const schedule: Schedule = {
+    id: generateId("sch"),
+    title: data.title.trim() || text().settings.untitledSchedule,
+    time: data.time,
+    taskId: data.taskId,
+    daysOfWeek: data.daysOfWeek,
+    enabled: true
+  };
+  const schedules = store.get("schedules");
+  store.set("schedules", [...schedules, schedule]);
+  publishSnapshot();
+  return schedule;
+}
+
+function updateSchedule(id: string, partial: Partial<Omit<Schedule, "id">>): void {
+  const schedules = store.get("schedules");
+  const next = schedules.map((item) => (item.id === id ? { ...item, ...partial } : item));
+  store.set("schedules", next);
+  publishSnapshot();
+}
+
+function removeSchedule(id: string): void {
+  const schedules = store.get("schedules");
+  store.set("schedules", schedules.filter((item) => item.id !== id));
+  publishSnapshot();
+}
+
+function startScheduleCheck(): void {
+  if (scheduleCheckTimer) clearInterval(scheduleCheckTimer);
+  // Run an initial check shortly after launch so a missed slot within the current minute fires once.
+  checkSchedules();
+  scheduleCheckTimer = setInterval(checkSchedules, SCHEDULE_CHECK_INTERVAL_MS);
+}
+
+function checkSchedules(): void {
+  const schedules = store.get("schedules");
+  if (!schedules.length) return;
+  const now = new Date();
+  const today = todayKey(now);
+  const dayOfWeek = now.getDay();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const nowHM = `${hh}:${mm}`;
+  for (const schedule of schedules) {
+    if (!schedule.enabled) continue;
+    if (schedule.lastTriggeredDate === today) continue;
+    if (schedule.time !== nowHM) continue;
+    const matchesDay = schedule.daysOfWeek.length === 0 || schedule.daysOfWeek.includes(dayOfWeek);
+    if (!matchesDay) continue;
+    triggerSchedule(schedule, today);
+    break; // one trigger per tick is enough
+  }
+}
+
+function triggerSchedule(schedule: Schedule, today: string): void {
+  // Mark triggered so it won't fire again today, even before the user responds.
+  updateSchedule(schedule.id, { lastTriggeredDate: today });
+  if (focusActive || blockingMode) return; // don't interrupt an active session
+  ensurePetWindowVisible();
+  triggeredScheduleId = schedule.id;
+  publishSnapshot();
+  const labels = text();
+  showBubble({
+    id: `schedule:${schedule.id}`,
+    message: labels.bubble.schedulePrompt(schedule.title),
+    actions: [
+      { id: `schedule:start:${schedule.id}`, label: labels.actions.scheduleStart, kind: "primary" },
+      { id: `schedule:skip:${schedule.id}`, label: labels.actions.scheduleSkip }
+    ],
+    autoDismissMs: 60_000
+  });
+}
+
+function handleScheduleAction(actionId: string, kind: "start" | "skip"): void {
+  const id = actionId.slice(`schedule:${kind}:`.length);
+  hideBubble();
+  triggeredScheduleId = null;
+  if (kind === "start") {
+    const schedule = store.get("schedules").find((item) => item.id === id);
+    if (!schedule) return;
+    if (schedule.taskId) activateTask(schedule.taskId, "manual");
+    startFocusMode(); // activeTaskId is set, so goal entry is skipped and time is attributed to the task
+  }
+  publishSnapshot();
 }
 
 function pauseFocusForDistraction(active: ActiveWindowInfo, rule?: string): void {
@@ -1613,6 +1805,14 @@ function startFocusMode(input?: FocusGoalInput): void {
   }
   ensurePetWindowVisible();
   const settings = getSettings();
+  // Focus reminder is irrelevant while focusing — clear it.
+  if (focusReminderTimer) {
+    clearTimeout(focusReminderTimer);
+    focusReminderTimer = null;
+  }
+  focusReminderDueAt = null;
+  // Inline goal prompt is no longer needed once focus begins.
+  clearFocusGoalInlineState();
   focusActive = true;
   focusPhase = "focus";
   focusCycleCurrent = 1;
@@ -1644,6 +1844,7 @@ function stopFocusMode(completed: boolean): void {
   clearFocusTimer();
   focusEndsAt = null;
   scheduleDistractionDetection();
+  scheduleFocusReminder();
   sendToAll("app:snapshot", snapshot());
   setPetState("focusDone");
   showBubble({
@@ -1673,6 +1874,7 @@ function triggerDemo(trigger: DemoTrigger): void {
   if (trigger === "break") triggerBreakReminder(true);
   if (trigger === "hydration") triggerHydrationReminder(true);
   if (trigger === "focusWarning") triggerFocusWarning("Twitter");
+  if (trigger === "focusReminder") triggerFocusReminder(true);
   if (trigger === "happy") happyFeedback(pick(text().bubble.woof));
 }
 
@@ -1764,6 +1966,16 @@ function handleBubbleAction(actionId: string): void {
     stopFocusMode(false);
     return;
   }
+  if (actionId === "focus:reminder-start") {
+    hideBubble();
+    beginFocusEntry();
+    return;
+  }
+  if (actionId === "focus:reminder-snooze") {
+    hideBubble();
+    scheduleFocusReminder();
+    return;
+  }
   if (actionId.startsWith("leisure:limit:")) {
     const minutes = Number(actionId.slice("leisure:limit:".length)) || 0;
     clearLeisureTimer();
@@ -1779,6 +1991,15 @@ function handleBubbleAction(actionId: string): void {
     const taskId = actionId.slice("task:switch:".length);
     hideBubble();
     activateTask(taskId === "null" ? null : taskId);
+    return;
+  }
+  if (actionId.startsWith("schedule:start:")) {
+    handleScheduleAction(actionId, "start");
+    return;
+  }
+  if (actionId.startsWith("schedule:skip:")) {
+    handleScheduleAction(actionId, "skip");
+    return;
   }
 }
 
@@ -1878,6 +2099,8 @@ function registerIpc(): void {
   ipcMain.on("focus:start", beginFocusEntry);
   ipcMain.on("focus:start-with-goals", (_event, input: FocusGoalInput) => startFocusMode(input));
   ipcMain.on("focus:stop", () => stopFocusMode(false));
+  ipcMain.on("focus:submit-inline-goal", (_event, title: string) => submitInlineGoal(title));
+  ipcMain.on("focus:skip-inline-goal", () => skipInlineGoal());
   ipcMain.on("goal:clear-draft", () => {
     setGoalDraft(null);
     setGoalSession(null);
@@ -1913,6 +2136,15 @@ function registerIpc(): void {
           : t
       )
     });
+  });
+  ipcMain.on("schedule:add", (_event, data: { title: string; time: string; taskId: string | null; daysOfWeek: number[] }) => {
+    addSchedule(data);
+  });
+  ipcMain.on("schedule:update", (_event, id: string, partial: Partial<Omit<Schedule, "id">>) => {
+    updateSchedule(id, partial);
+  });
+  ipcMain.on("schedule:remove", (_event, id: string) => {
+    removeSchedule(id);
   });
 }
 
@@ -1950,6 +2182,7 @@ app.whenReady().then(() => {
   scheduleReminderTimers();
   scheduleDistractionDetection();
   scheduleAutoTaskSwitch();
+  startScheduleCheck();
   if (IS_DEV) {
     createSettingsWindow();
   }

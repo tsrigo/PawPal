@@ -167,6 +167,14 @@ export function PetView(): JSX.Element {
         </section>
       ) : null}
 
+      {snapshot.focusGoalInlineOpen ? (
+        <InlineGoalPrompt
+          deadlineAt={snapshot.focusGoalInlineDeadlineAt}
+          now={now}
+          labels={labels}
+        />
+      ) : null}
+
       {snapshot.focusActive ? (
         <div className="focus-badge">
           <span>
@@ -226,5 +234,72 @@ export function PetView(): JSX.Element {
         <img draggable={false} src={asset.src} alt={altText} />
       </button>
     </main>
+  );
+}
+
+function InlineGoalPrompt({
+  deadlineAt,
+  now,
+  labels
+}: {
+  deadlineAt: number | null;
+  now: number;
+  labels: ReturnType<typeof i18n>["settings"];
+}): JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const remainingSeconds = deadlineAt
+    ? Math.max(0, Math.ceil((deadlineAt - now) / 1000))
+    : 0;
+
+  function commit(): void {
+    window.pawpal.submitInlineGoal(value);
+  }
+
+  return (
+    <section className="speech-bubble inline-goal" aria-label={labels.inlineGoalPrompt}>
+      <p>{labels.inlineGoalPrompt}</p>
+      <input
+        ref={inputRef}
+        className="inline-goal__input"
+        type="text"
+        value={value}
+        placeholder={labels.inlineGoalPlaceholder}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+        }}
+      />
+      <div className="bubble-actions">
+        <button
+          type="button"
+          className="bubble-button primary"
+          onClick={commit}
+        >
+          {labels.startFocus}
+        </button>
+        <button
+          type="button"
+          className="bubble-button secondary"
+          onClick={() => window.pawpal.skipInlineGoal()}
+        >
+          {labels.inlineGoalSkip}
+        </button>
+      </div>
+      {deadlineAt ? (
+        <small className="inline-goal__countdown">
+          {remainingSeconds}
+          {labels.inlineGoalCountdownSuffix}
+        </small>
+      ) : null}
+    </section>
   );
 }

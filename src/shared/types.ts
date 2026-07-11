@@ -2,6 +2,16 @@ export type Language = "zh-CN" | "en";
 
 export type TaskType = "deepWork" | "misc" | "leisure";
 
+export type Schedule = {
+  id: string;
+  title: string;
+  time: string; // "HH:MM" 24h
+  taskId: string | null; // associated task for stats; null = __misc__
+  daysOfWeek: number[]; // [0..6] Sunday..Saturday; empty = every day
+  enabled: boolean;
+  lastTriggeredDate?: string; // "YYYY-MM-DD", prevents duplicate triggers
+};
+
 export type Task = {
   id: string;
   name: string;
@@ -89,6 +99,8 @@ export type Settings = {
   breakIntervalMinutes: number;
   hydrationReminderEnabled: boolean;
   hydrationIntervalMinutes: number;
+  focusReminderEnabled: boolean;
+  focusReminderIntervalMinutes: number;
   focusDurationMinutes: number;
   focusBreakMinutes: number;
   focusPomodoroCount: number;
@@ -122,6 +134,7 @@ export type StatsHistory = Record<string, TodayStats>;
 export type TimerStatus = {
   breakDueAt: number | null;
   hydrationDueAt: number | null;
+  focusReminderDueAt: number | null;
   focusEndsAt: number | null;
   focusRemainingMs: number | null;
   distractionStartedAt: number | null;
@@ -152,16 +165,20 @@ export type AppSnapshot = {
   goalSession: FocusGoalSession | null;
   goalDraft: FocusGoalInput | null;
   focusGoalInputOpen: boolean;
+  focusGoalInlineOpen: boolean;
+  focusGoalInlineDeadlineAt: number | null;
   dogVisible: boolean;
   activeTaskId: string | null;
   taskTimerStartedAt: number | null;
   leisureEndsAt: number | null;
+  schedules: Schedule[];
 };
 
 export type DemoTrigger =
   | "break"
   | "hydration"
   | "focusWarning"
+  | "focusReminder"
   | "happy";
 
 export type RendererEventMap = {

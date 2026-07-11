@@ -27,6 +27,7 @@ export function useSnapshot(): AppSnapshot {
     timers: {
       breakDueAt: null,
       hydrationDueAt: null,
+      focusReminderDueAt: null,
       focusEndsAt: null,
       focusRemainingMs: null,
       distractionStartedAt: null
@@ -49,10 +50,13 @@ export function useSnapshot(): AppSnapshot {
     goalSession: null,
     goalDraft: null,
     focusGoalInputOpen: false,
+    focusGoalInlineOpen: false,
+    focusGoalInlineDeadlineAt: null,
     dogVisible: true,
     activeTaskId: null,
     taskTimerStartedAt: null,
-    leisureEndsAt: null
+    leisureEndsAt: null,
+    schedules: []
   });
 
   useEffect(() => {

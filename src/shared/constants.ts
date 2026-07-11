@@ -27,6 +27,8 @@ export const DEFAULT_SETTINGS: Settings = {
   breakIntervalMinutes: 45,
   hydrationReminderEnabled: true,
   hydrationIntervalMinutes: 90,
+  focusReminderEnabled: true,
+  focusReminderIntervalMinutes: 15,
   focusDurationMinutes: 25,
   focusBreakMinutes: 5,
   focusPomodoroCount: 4,

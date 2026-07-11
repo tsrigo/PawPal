@@ -4,6 +4,7 @@ import type {
   DemoTrigger,
   FocusGoalInput,
   PetState,
+  Schedule,
   Settings,
   SpeechBubble,
   TaskType,
@@ -37,6 +38,8 @@ const api = {
   startFocus: (): void => ipcRenderer.send("focus:start"),
   startFocusWithGoals: (goals: FocusGoalInput): void => ipcRenderer.send("focus:start-with-goals", goals),
   stopFocus: (): void => ipcRenderer.send("focus:stop"),
+  submitInlineGoal: (title: string): void => ipcRenderer.send("focus:submit-inline-goal", title),
+  skipInlineGoal: (): void => ipcRenderer.send("focus:skip-inline-goal"),
   clearGoalDraft: (): void => ipcRenderer.send("goal:clear-draft"),
   blockCurrentApp: (): void => ipcRenderer.send("distraction:block-current-app"),
   resetToday: (): void => ipcRenderer.send("stats:reset-today"),
@@ -47,6 +50,15 @@ const api = {
   removeTask: (taskId: string): void => ipcRenderer.send("task:remove", taskId),
   setTaskRules: (taskId: string, rules: string[]): void =>
     ipcRenderer.send("task:set-rules", taskId, rules),
+  addSchedule: (data: {
+    title: string;
+    time: string;
+    taskId: string | null;
+    daysOfWeek: number[];
+  }): void => ipcRenderer.send("schedule:add", data),
+  updateSchedule: (id: string, partial: Partial<Omit<Schedule, "id">>): void =>
+    ipcRenderer.send("schedule:update", id, partial),
+  removeSchedule: (id: string): void => ipcRenderer.send("schedule:remove", id),
   onPetState: (callback: (state: PetState) => void): Unsubscribe =>
     onChannel("pet:set-state", callback),
   onShowBubble: (callback: (bubble: SpeechBubble) => void): Unsubscribe =>
