@@ -18,7 +18,8 @@
     "productName": "PawPal",
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
@@ -69,11 +70,5 @@
     "electron-vite": "^4.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "esbuild"
-    ]
   }
 }

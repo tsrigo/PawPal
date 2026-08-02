@@ -16,6 +16,7 @@ const initialStats: TodayStats = {
   distractionByWindow: {},
   goalsCompleted: 0,
   smallGoalsCompleted: 0,
+  pomodoros: [],
   taskStats: {}
 };
 

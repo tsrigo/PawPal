@@ -29,6 +29,11 @@ export type TaskStat = {
   activeByWindow: Record<string, number>;
 };
 
+export type PomodoroRecord = {
+  name: string;
+  completedAt: number;
+};
+
 export type PetAppearanceId = "lovartPuppy" | "lineDog";
 
 export type PetFacing = "left" | "right";
@@ -126,6 +131,7 @@ export type TodayStats = {
   distractionByWindow: Record<string, number>;
   goalsCompleted: number;
   smallGoalsCompleted: number;
+  pomodoros: PomodoroRecord[];
   taskStats: Record<string, TaskStat>;
 };
 

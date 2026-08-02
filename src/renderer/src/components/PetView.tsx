@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { JSX, MouseEvent, PointerEvent } from "react";
 import { i18n, resolveLanguage } from "../../../shared/i18n";
-import { BUILTIN_TASKS } from "../../../shared/constants";
-import type { PetState, SpeechBubble } from "../../../shared/types";
+import { BUILTIN_TASKS, TODAY_POMODORO_SLOT_COUNT } from "../../../shared/constants";
+import type { PetState, SpeechBubble, TodayStats } from "../../../shared/types";
 import { getPetAsset, getPetAssetVariantCount } from "../assets";
 import { useNow, useSnapshot } from "../hooks";
 
@@ -50,7 +50,9 @@ export function PetView(): JSX.Element {
   const [assetVariant, setAssetVariant] = useState(0);
   const [assetReplayKey, setAssetReplayKey] = useState(0);
   const [stateSignal, setStateSignal] = useState(0);
+  const [pomodoroHovered, setPomodoroHovered] = useState(false);
   const dragRef = useRef<DragRef | null>(null);
+  const pomodoroHideTimer = useRef<number | null>(null);
   const labels = i18n(resolveLanguage(snapshot.settings.language)).settings;
 
   useEffect(() => {
@@ -63,6 +65,34 @@ export function PetView(): JSX.Element {
       offPetState();
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pomodoroHideTimer.current !== null) {
+        window.clearTimeout(pomodoroHideTimer.current);
+      }
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const elements = Array.from(document.querySelectorAll<HTMLElement>(".speech-bubble"));
+    const reportHeight = (): void => {
+      const height = elements.reduce(
+        (largest, element) =>
+          Math.max(
+            largest,
+            Math.ceil(element.getBoundingClientRect().height),
+            element.scrollHeight
+          ),
+        0
+      );
+      window.pawpal.bubbleHeightChanged(height);
+    };
+    reportHeight();
+    const observer = new ResizeObserver(reportHeight);
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [bubble, snapshot.focusGoalInlineOpen]);
 
   const state = snapshot.petState;
   const altText = `PawPal ${state}`;
@@ -138,6 +168,22 @@ export function PetView(): JSX.Element {
     }
   }
 
+  function showPomodoroTracker(): void {
+    if (pomodoroHideTimer.current !== null) {
+      window.clearTimeout(pomodoroHideTimer.current);
+      pomodoroHideTimer.current = null;
+    }
+    setPomodoroHovered(true);
+  }
+
+  function hidePomodoroTracker(): void {
+    if (pomodoroHideTimer.current !== null) window.clearTimeout(pomodoroHideTimer.current);
+    pomodoroHideTimer.current = window.setTimeout(() => {
+      pomodoroHideTimer.current = null;
+      setPomodoroHovered(false);
+    }, 700);
+  }
+
   return (
     <main
       className="pet-shell"
@@ -147,93 +193,169 @@ export function PetView(): JSX.Element {
         window.pawpal.petContextMenu();
       }}
     >
-      {bubble ? (
-        <section className="speech-bubble">
-          <p>{bubble.message}</p>
-          {bubble.actions?.length ? (
-            <div className="bubble-actions">
-              {bubble.actions.map((action) => (
-                <button
-                  className={`bubble-button ${action.kind ?? "secondary"}`}
-                  key={action.id}
-                  onClick={() => window.pawpal.bubbleAction(action.id)}
-                  type="button"
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
-      {snapshot.focusGoalInlineOpen ? (
-        <InlineGoalPrompt
-          deadlineAt={snapshot.focusGoalInlineDeadlineAt}
-          now={now}
-          labels={labels}
-        />
-      ) : null}
-
-      {snapshot.focusActive ? (
-        <div className="focus-badge">
-          <span>
-            {snapshot.blockingMode === "focusWarning"
-              ? labels.distraction
-              : snapshot.focusPhase === "break"
-                ? labels.break
-                : labels.focus}
-          </span>
-          <strong>
-            {snapshot.blockingMode === "focusWarning"
-              ? formatDistractionElapsed(snapshot.timers.distractionStartedAt, now)
-              : formatFocusCountdown(snapshot.timers.focusEndsAt, now)}
-          </strong>
-          {snapshot.settings.focusPomodoroCount > 1 ? (
-            <em>
-              {snapshot.focusCycleCurrent}/{snapshot.settings.focusPomodoroCount}
-            </em>
-          ) : null}
-          {snapshot.activeTaskId ? (
-            <small className="focus-badge__task">
-              {[...BUILTIN_TASKS, ...snapshot.settings.tasks].find((t) => t.id === snapshot.activeTaskId)?.name ?? ""}
-            </small>
-          ) : null}
-        </div>
-      ) : snapshot.activeTaskId && snapshot.taskTimerStartedAt ? (
-        (() => {
-          const activeTask = [...BUILTIN_TASKS, ...snapshot.settings.tasks].find(
-            (t) => t.id === snapshot.activeTaskId
-          );
-          const leisureCountdown = activeTask?.type === "leisure" && snapshot.leisureEndsAt !== null;
-          return (
-            <div className={`task-badge${leisureCountdown ? " task-badge--leisure" : ""}`}>
-              <span>{activeTask?.name ?? ""}</span>
-              <strong>
-                {leisureCountdown
-                  ? formatFocusCountdown(snapshot.leisureEndsAt, now)
-                  : formatDurationSeconds((now - snapshot.taskTimerStartedAt!) / 1000)}
-              </strong>
-            </div>
-          );
-        })()
-      ) : null}
-
-      <button
-        className={`pet-button state-${state} ${facingClass} ${
-          asset.isPlaceholder ? "placeholder-asset" : ""
-        }`}
-        onAuxClick={handleMiddleClick}
-        onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
-        onPointerCancel={cancelPointer}
-        onPointerDown={startPointer}
-        onPointerMove={movePointer}
-        onPointerUp={stopPointer}
-        type="button"
+      <div
+        className={`pet-stage${pomodoroHovered ? " is-pomodoro-hovered" : ""}`}
+        onMouseEnter={showPomodoroTracker}
+        onMouseLeave={hidePomodoroTracker}
       >
-        <img draggable={false} src={asset.src} alt={altText} />
-      </button>
+        {bubble ? (
+          <section className="speech-bubble">
+            <p>{bubble.message}</p>
+            {bubble.actions?.length ? (
+              <div className="bubble-actions">
+                {bubble.actions.map((action) => (
+                  <button
+                    className={`bubble-button ${action.kind ?? "secondary"}`}
+                    key={action.id}
+                    onClick={() => window.pawpal.bubbleAction(action.id)}
+                    type="button"
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {snapshot.focusGoalInlineOpen ? (
+          <InlineGoalPrompt
+            deadlineAt={snapshot.focusGoalInlineDeadlineAt}
+            now={now}
+            labels={labels}
+          />
+        ) : null}
+
+        {snapshot.focusActive ? (
+          <div className="focus-badge">
+            <span>
+              {snapshot.blockingMode === "focusWarning"
+                ? labels.distraction
+                : snapshot.focusPhase === "break"
+                  ? labels.break
+                  : labels.focus}
+            </span>
+            <strong>
+              {snapshot.blockingMode === "focusWarning"
+                ? formatDistractionElapsed(snapshot.timers.distractionStartedAt, now)
+                : formatFocusCountdown(snapshot.timers.focusEndsAt, now)}
+            </strong>
+            {snapshot.settings.focusPomodoroCount > 1 ? (
+              <em>
+                {snapshot.focusCycleCurrent}/{snapshot.settings.focusPomodoroCount}
+              </em>
+            ) : null}
+            {snapshot.activeTaskId ? (
+              <small className="focus-badge__task">
+                {[...BUILTIN_TASKS, ...snapshot.settings.tasks].find((t) => t.id === snapshot.activeTaskId)?.name ?? ""}
+              </small>
+            ) : null}
+          </div>
+        ) : snapshot.activeTaskId && snapshot.taskTimerStartedAt ? (
+          (() => {
+            const activeTask = [...BUILTIN_TASKS, ...snapshot.settings.tasks].find(
+              (t) => t.id === snapshot.activeTaskId
+            );
+            const leisureCountdown = activeTask?.type === "leisure" && snapshot.leisureEndsAt !== null;
+            return (
+              <div className={`task-badge${leisureCountdown ? " task-badge--leisure" : ""}`}>
+                <span>{activeTask?.name ?? ""}</span>
+                <strong>
+                  {leisureCountdown
+                    ? formatFocusCountdown(snapshot.leisureEndsAt, now)
+                    : formatDurationSeconds((now - snapshot.taskTimerStartedAt!) / 1000)}
+                </strong>
+              </div>
+            );
+          })()
+        ) : null}
+
+        <button
+          className={`pet-button state-${state} ${facingClass} ${
+            asset.isPlaceholder ? "placeholder-asset" : ""
+          }`}
+          onAuxClick={handleMiddleClick}
+          onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+          onPointerCancel={cancelPointer}
+          onPointerDown={startPointer}
+          onPointerMove={movePointer}
+          onPointerUp={stopPointer}
+          type="button"
+        >
+          <img draggable={false} src={asset.src} alt={altText} />
+        </button>
+
+        <PomodoroTracker
+          records={snapshot.stats.pomodoros}
+          labels={labels}
+          onMouseEnter={showPomodoroTracker}
+          onMouseLeave={hidePomodoroTracker}
+        />
+      </div>
     </main>
+  );
+}
+
+function PomodoroTracker({
+  records,
+  labels,
+  onMouseEnter,
+  onMouseLeave
+}: {
+  records: TodayStats["pomodoros"];
+  labels: ReturnType<typeof i18n>["settings"];
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}): JSX.Element {
+  const completedCount = records.length;
+  const progressMessage =
+    completedCount === 0
+      ? labels.pomodoroFirst
+      : completedCount === TODAY_POMODORO_SLOT_COUNT - 1
+        ? labels.pomodoroAlmost
+        : completedCount >= TODAY_POMODORO_SLOT_COUNT
+          ? labels.pomodoroAllDone
+          : labels.pomodoroProgress(completedCount, TODAY_POMODORO_SLOT_COUNT);
+
+  return (
+    <aside
+      className="pomodoro-tracker"
+      aria-label={labels.pomodoroTracker}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <div className="pomodoro-tracker__head">
+        <span>{labels.pomodoroTracker}</span>
+        <strong>
+          {completedCount}/{TODAY_POMODORO_SLOT_COUNT}
+        </strong>
+      </div>
+      <div className="pomodoro-tracker__grid">
+        {Array.from({ length: TODAY_POMODORO_SLOT_COUNT }, (_, index) => {
+          const record = records[index];
+          const name = record?.name ?? labels.pomodoroDefault(index + 1);
+          return (
+            <div
+              aria-label={name}
+              className={`pomodoro-slot${record ? " is-complete" : ""}`}
+              key={record ? `${record.completedAt}-${index}` : `empty-${index}`}
+              role="img"
+              title={name}
+            >
+              <span>{index + 1}</span>
+            </div>
+          );
+        })}
+      </div>
+      {completedCount > TODAY_POMODORO_SLOT_COUNT ? (
+        <small className="pomodoro-tracker__overflow">
+          +{completedCount - TODAY_POMODORO_SLOT_COUNT}
+        </small>
+      ) : null}
+      <p className="pomodoro-tracker__message" aria-live="polite">
+        {progressMessage}
+      </p>
+    </aside>
   );
 }
 

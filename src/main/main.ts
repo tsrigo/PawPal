@@ -8,6 +8,7 @@ import {
   createEmptyStats,
   createEmptyTaskStat,
   DEFAULT_SETTINGS,
+  TODAY_POMODORO_SLOT_COUNT,
   todayKey
 } from "../shared/constants";
 import { i18n, pick, resolveLanguage } from "../shared/i18n";
@@ -23,6 +24,7 @@ import type {
   FocusPhase,
   PetFacing,
   PetState,
+  PomodoroRecord,
   Schedule,
   Settings,
   StatsHistory,
@@ -135,6 +137,7 @@ let autoSwitchSuppressedUntil = 0;
 let autoSwitchTimer: NodeJS.Timeout | null = null;
 let leisureEndsAt: number | null = null;
 let leisureTimer: NodeJS.Timeout | null = null;
+let statsRolloverTimer: NodeJS.Timeout | null = null;
 let scheduleCheckTimer: NodeJS.Timeout | null = null;
 const SCHEDULE_CHECK_INTERVAL_MS = 30_000;
 let triggeredScheduleId: string | null = null;
@@ -420,6 +423,21 @@ function normalizeTaskStats(value: unknown): Record<string, TaskStat> {
   );
 }
 
+function normalizePomodoros(value: unknown): PomodoroRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const candidate = entry as Partial<PomodoroRecord>;
+    const name = typeof candidate.name === "string" ? candidate.name.trim().slice(0, 160) : "";
+    const completedAt =
+      typeof candidate.completedAt === "number" && Number.isFinite(candidate.completedAt) && candidate.completedAt > 0
+        ? candidate.completedAt
+        : 0;
+    if (!name || !completedAt) return [];
+    return [{ name, completedAt }];
+  });
+}
+
 function normalizeStats(stats: Partial<TodayStats> | undefined, date = todayKey()): TodayStats {
   const base = createEmptyStats(typeof stats?.date === "string" ? stats.date : date);
   const focusMs = normalizeNumber(stats?.focusMs) || normalizeNumber(stats?.focusMinutes) * 60_000;
@@ -440,6 +458,7 @@ function normalizeStats(stats: Partial<TodayStats> | undefined, date = todayKey(
     distractionByWindow: normalizeDurationMap(stats?.distractionByWindow),
     goalsCompleted: normalizeNumber(stats?.goalsCompleted),
     smallGoalsCompleted: normalizeNumber(stats?.smallGoalsCompleted),
+    pomodoros: normalizePomodoros(stats?.pomodoros),
     taskStats: normalizeTaskStats(stats?.taskStats)
   };
 }
@@ -489,6 +508,18 @@ function resetTodayStats(): void {
   sendToAll("stats:updated", reset);
 }
 
+function scheduleStatsRollover(): void {
+  if (statsRolloverTimer) clearTimeout(statsRolloverTimer);
+  const nextDay = new Date();
+  nextDay.setHours(24, 0, 0, 50);
+  statsRolloverTimer = setTimeout(() => {
+    statsRolloverTimer = null;
+    getStats();
+    publishSnapshot();
+    scheduleStatsRollover();
+  }, Math.max(1_000, nextDay.getTime() - Date.now()));
+}
+
 function normalizeGoalTitle(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -534,6 +565,35 @@ function currentGoalText(): string | null {
   if (!session) return null;
   const currentSmallGoal = session.smallGoals[session.currentSmallGoalIndex];
   return currentSmallGoal?.title || session.bigGoal.title || null;
+}
+
+function currentPomodoroName(slotNumber: number): string {
+  const goal = currentGoalText();
+  if (goal) return goal;
+  const task = activeTaskId ? getAllTasks().find((entry) => entry.id === activeTaskId) : null;
+  if (task?.name) return task.name;
+  return text().settings.pomodoroDefault(slotNumber);
+}
+
+function pomodoroEncouragement(completedCount: number): string {
+  const labels = text().settings;
+  if (completedCount === TODAY_POMODORO_SLOT_COUNT - 1) return labels.pomodoroAlmost;
+  if (completedCount >= TODAY_POMODORO_SLOT_COUNT) return labels.pomodoroAllDone;
+  if (completedCount === 1) return labels.pomodoroFirstDone;
+  return labels.pomodoroProgress(completedCount, TODAY_POMODORO_SLOT_COUNT);
+}
+
+function recordCompletedPomodoro(): number {
+  const current = getStats();
+  const name = currentPomodoroName(current.pomodoros.length + 1);
+  const record: PomodoroRecord = { name, completedAt: Date.now() };
+  let completedCount = current.pomodoros.length;
+  updateStats((stats) => {
+    const pomodoros = [...stats.pomodoros, record];
+    completedCount = pomodoros.length;
+    return { ...stats, pomodoros };
+  });
+  return completedCount;
 }
 
 function startGoalSession(input: FocusGoalInput): FocusGoalSession | null {
@@ -803,17 +863,23 @@ function clampBoundsToWorkArea(bounds: Electron.Rectangle): Electron.Rectangle {
 function initialPetBounds(): Electron.Rectangle {
   const workArea = screen.getPrimaryDisplay().workArea;
   const stored = store.get("petPosition");
+  const petStageWidth = 220;
+  const petCenterOffset = PET_WINDOW.width - petStageWidth / 2;
+  const previousPetCenterOffset = petStageWidth / 2;
   const fallback = {
     width: PET_WINDOW.width,
     height: PET_WINDOW.compactHeight,
-    x: Math.round(workArea.x + workArea.width / 2 - PET_WINDOW.width / 2),
+    x: Math.round(workArea.x + workArea.width / 2 - petCenterOffset),
     y: workArea.y + workArea.height - PET_WINDOW.compactHeight
   };
 
   if (!stored) return fallback;
+  // The previous layout centered the dog in a 220px window. Preserve the dog's
+  // screen position after moving it to the right side of the wider overlay window.
+  const restoredX = stored.x - (petCenterOffset - previousPetCenterOffset);
   return clampBoundsToWorkArea({
     ...fallback,
-    x: stored.x,
+    x: restoredX,
     y: stored.y
   });
 }
@@ -827,13 +893,31 @@ function persistPetPosition(): void {
 function setPetWindowHeight(height: number): void {
   if (!petWindow || petWindow.isDestroyed()) return;
   const current = petWindow.getBounds();
-  if (current.height === height) return;
+  const workArea = screen.getDisplayNearestPoint({
+    x: current.x + Math.round(current.width / 2),
+    y: current.y + Math.round(current.height / 2)
+  }).workArea;
+  const safeHeight = Math.min(Math.max(Math.round(height), PET_WINDOW.compactHeight), workArea.height);
+  if (current.height === safeHeight) return;
   const next = clampBoundsToWorkArea({
     ...current,
-    height,
-    y: current.y + current.height - height
+    height: safeHeight,
+    y: current.y + current.height - safeHeight
   });
   petWindow.setBounds(next);
+}
+
+function fitPetWindowToBubble(contentHeight: number): void {
+  if (!Number.isFinite(contentHeight) || contentHeight <= 0) {
+    setPetWindowHeight(PET_WINDOW.compactHeight);
+    return;
+  }
+  setPetWindowHeight(
+    Math.max(
+      PET_WINDOW.height,
+      PET_WINDOW.bubbleBottom + Math.ceil(contentHeight) + PET_WINDOW.bubbleMargin
+    )
+  );
 }
 
 function createPetWindow(): void {
@@ -941,6 +1025,7 @@ function clearFocusGoalInlineState(): void {
   }
   focusGoalInlineOpen = false;
   focusGoalInlineDeadlineAt = null;
+  setPetWindowHeight(PET_WINDOW.compactHeight);
 }
 
 function requestFocusGoalInput(): void {
@@ -949,6 +1034,9 @@ function requestFocusGoalInput(): void {
   clearFocusGoalInlineState();
   focusGoalInlineOpen = true;
   focusGoalInlineDeadlineAt = Date.now() + INLINE_GOAL_AUTO_SKIP_MS;
+  // This prompt is rendered from snapshot state rather than showBubble(), so
+  // reserve its expanded area before React paints it.
+  setPetWindowHeight(PET_WINDOW.height);
   focusGoalInlineTimer = setTimeout(() => {
     // Auto-skip: start focus without a goal after 10s of no input.
     focusGoalInlineOpen = false;
@@ -1476,6 +1564,9 @@ function triggerFocusReminder(fromDemo: boolean): void {
   ensurePetWindowVisible();
   const settings = getSettings();
   const labels = text();
+  // Keep the reminder recurring at the configured interval. Previously, ignoring
+  // the bubble or letting it auto-dismiss permanently stopped future reminders.
+  if (!fromDemo) scheduleFocusReminder();
   // Gentle, non-blocking reminder: does not set blockingMode so it won't trap the user.
   publishSnapshot();
   showBubble({
@@ -1731,7 +1822,7 @@ function beginFocusInterval(settings = getSettings()): void {
   sendToAll("app:snapshot", snapshot());
 }
 
-function beginPomodoroBreak(settings = getSettings()): void {
+function beginPomodoroBreak(settings = getSettings(), completionMessage?: string): void {
   focusPhase = "break";
   focusStartedAt = null;
   focusSegmentStartedAt = null;
@@ -1745,7 +1836,7 @@ function beginPomodoroBreak(settings = getSettings()): void {
   setPetState("focusDone");
   showBubble({
     id: "pomodoro-break",
-    message: pick(text().bubble.focusBreakStart)(settings.focusBreakMinutes),
+    message: completionMessage ?? pick(text().bubble.focusBreakStart)(settings.focusBreakMinutes),
     autoDismissMs: 4500
   });
   clearFocusTimer();
@@ -1767,7 +1858,10 @@ function promptResumeNextGoal(): void {
     message: nextGoal?.title
       ? text().bubble.resumeNextGoal(nextGoal.title)
       : text().bubble.resumeNextGoalGeneric,
-    actions: [{ id: "goal:resume", label: text().actions.goalResume, kind: "primary" }]
+    actions: [
+      { id: "goal:resume", label: text().actions.goalResume, kind: "primary" },
+      { id: "goal:stop", label: text().actions.focusEnd }
+    ]
   });
   sendToAll("app:snapshot", snapshot());
 }
@@ -1777,11 +1871,8 @@ function completeFocusInterval(): void {
   const settings = getSettings();
   recordStatsSpan("focus", focusSegmentStartedAt, Date.now(), lastFocusWindow);
   focusSegmentStartedAt = null;
-  if (focusCycleCurrent >= settings.focusPomodoroCount) {
-    promptBigGoalCompletion();
-    return;
-  }
-  promptSmallGoalCompletion();
+  const completedCount = recordCompletedPomodoro();
+  beginPomodoroBreak(settings, pomodoroEncouragement(completedCount));
 }
 
 function startFocusMode(input?: FocusGoalInput): void {
@@ -1897,6 +1988,11 @@ function handleBubbleAction(actionId: string): void {
     blockingMode = null;
     focusCycleCurrent += 1;
     beginFocusInterval(getSettings());
+    return;
+  }
+  if (actionId === "goal:stop") {
+    if (!focusActive || focusPhase !== "break") return;
+    stopFocusMode(false);
     return;
   }
   if (actionId === "goal:big-completed" || actionId === "goal:big-progress") {
@@ -2091,6 +2187,10 @@ function registerIpc(): void {
     startPetDrag(offset)
   );
   ipcMain.on("pet:drag-stop", stopPetDrag);
+  ipcMain.on("pet:bubble-height", (event, height: number) => {
+    if (!petWindow || event.sender !== petWindow.webContents) return;
+    fitPetWindowToBubble(height);
+  });
   ipcMain.on("bubble:action", (_event, actionId: string) => handleBubbleAction(actionId));
   ipcMain.on("settings:update", (_event, partial: Partial<Settings>) => {
     setSettings({ ...getSettings(), ...partial });
@@ -2175,6 +2275,7 @@ app.whenReady().then(() => {
   });
 
   getStats();
+  scheduleStatsRollover();
   registerIpc();
   registerPowerMonitor();
   createPetWindow();
@@ -2207,7 +2308,8 @@ app.on("before-quit", () => {
     dragTimer,
     taskSaveTimer,
     autoSwitchTimer,
-    leisureTimer
+    leisureTimer,
+    statsRolloverTimer
   ]) {
     if (timer) clearTimeout(timer);
   }

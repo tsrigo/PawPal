@@ -2,6 +2,7 @@ import type { Settings, Task, TaskStat, TodayStats } from "./types";
 
 export const BUILTIN_TASK_MISC_ID = "__misc__";
 export const BUILTIN_TASK_LEISURE_ID = "__leisure__";
+export const TODAY_POMODORO_SLOT_COUNT = 8;
 
 export const BUILTIN_TASKS: Task[] = [
   { id: BUILTIN_TASK_MISC_ID, name: "杂活", type: "misc", isBuiltin: true },
@@ -98,6 +99,7 @@ export function createEmptyStats(date = todayKey()): TodayStats {
     distractionByWindow: {},
     goalsCompleted: 0,
     smallGoalsCompleted: 0,
+    pomodoros: [],
     taskStats: {}
   };
 }

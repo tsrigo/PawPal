@@ -27,6 +27,7 @@ const api = {
   petDragStart: (offset: { offsetX: number; offsetY: number }): void =>
     ipcRenderer.send("pet:drag-start", offset),
   petDragStop: (): void => ipcRenderer.send("pet:drag-stop"),
+  bubbleHeightChanged: (height: number): void => ipcRenderer.send("pet:bubble-height", height),
   bubbleAction: (actionId: string): void => ipcRenderer.send("bubble:action", actionId),
   updateSettings: (settings: Partial<Settings>): void =>
     ipcRenderer.send("settings:update", settings),

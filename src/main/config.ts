@@ -8,9 +8,11 @@ export const APP_NAME = "PawPal";
 export const STORE_NAME = "pawpal";
 
 export const PET_WINDOW = {
-  width: 220,
-  height: 290,
-  compactHeight: 210
+  width: 372,
+  height: 340,
+  compactHeight: 210,
+  bubbleBottom: 154,
+  bubbleMargin: 16
 } as const;
 
 export const SETTINGS_WINDOW = {
