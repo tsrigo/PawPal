@@ -34,10 +34,12 @@ PawPal 是一个 macOS 桌面宠物应用。一只透明、始终置顶的小狗
 > 首次打开时 macOS 可能提示"无法验证开发者"，请在 系统设置 → 隐私与安全性 中允许打开。
 > 专注模式需要授予 Accessibility 权限。
 
+> 如果是从源码在没有 Apple Developer ID 的 Mac 上构建，请使用 `pnpm dist:mac:local`。该命令会关闭公证和 Hardened Runtime，避免 ad-hoc 签名在新版 macOS 上因 Electron Framework Team ID 不一致而无法启动；此构建仅适合本机测试，不应用于公开分发。
+
 ### 从源码运行
 
 ```bash
-git clone https://github.com/zebangeth/PawPal.git
+git clone https://github.com/tsrigo/PawPal.git
 cd PawPal
 pnpm install
 pnpm dev
@@ -47,7 +49,8 @@ pnpm dev
 
 ```bash
 pnpm build        # 编译（含类型检查）
-pnpm dist         # 编译 + 打包为 .dmg
+pnpm dist         # 编译 + 使用 Developer ID 签名、公证并打包为 .dmg
+pnpm dist:mac:local # 本机测试包（Apple Silicon/Intel 自动匹配，无需证书）
 ```
 
 ## 技术栈
@@ -101,7 +104,7 @@ PawPal is a macOS desktop pet app. A transparent, always-on-top dog lives on you
 Download the latest `.dmg` from [Releases](../../releases), or run from source:
 
 ```bash
-git clone https://github.com/zebangeth/PawPal.git
+git clone https://github.com/tsrigo/PawPal.git
 cd PawPal
 pnpm install
 pnpm dev
